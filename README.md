@@ -1,11 +1,8 @@
-# Secure Chat
+# CipherChat
 
-Production-ready, end-to-end encrypted real-time chat built on the **MERN** stack
-(MongoDB, Express.js, React, Node.js) with **Socket.IO** for realtime transport and
-**WebCrypto** (ECDH P-256 + AES-256-GCM) for end-to-end encryption. The server only ever
-sees opaque ciphertext.
+**Skills:** React, Node.js, Express, MongoDB, Socket.IO, WebRTC, WebCrypto, Docker, JWT, E2EE
 
-![stack](https://img.shields.io/badge/stack-MERN-00a884) ![e2ee](https://img.shields.io/badge/E2EE-ECDH%20%2B%20AES--GCM-blue)
+CipherChat is a production-ready, end-to-end encrypted real-time chat application built on the MERN stack. It uses ECDH key exchange and AES-256-GCM encryption to ensure only communicating users can read messages — the server never sees plaintext. Features include 1-to-1 and group chats, file sharing, video/audio calls, typing indicators, and read receipts. The app is fully containerized with Docker and includes an admin dashboard for user and audit management.
 
 ## Features
 
