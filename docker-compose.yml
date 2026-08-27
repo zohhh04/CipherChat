@@ -1,0 +1,65 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-net
+
+  server:
+    build: ./server
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "5000"
+      MONGO_URI: mongodb://mongo:27017/securechat
+      CLIENT_URLS: ${CLIENT_URLS:-http://localhost:8080}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET}
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      COOKIE_SECURE: "true"
+      EMAIL_VERIFICATION_REQUIRED: ${EMAIL_VERIFICATION_REQUIRED:-true}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-"Secure Chat <no-reply@localhost>"}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    volumes:
+      - file_uploads:/app/uploads
+    networks:
+      - app-net
+
+  client:
+    build:
+      context: ./client
+      args:
+        VITE_API_BASE: /api
+        VITE_SOCKET_URL: ""
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "${APP_PORT:-8080}:80"
+    networks:
+      - app-net
+
+volumes:
+  mongo_data:
+  file_uploads:
+
+networks:
+  app-net:
+    driver: bridge
