@@ -9,7 +9,7 @@ import { chatListTime } from '../../utils/format';
 import { toast } from '../common/Toast';
 
 export default function Sidebar({ onNewChat, onNewGroup }) {
-  const { user, logout } = useAuth();
+  const { user, logout, identityReady } = useAuth();
   const { chats, activeChatId, openChat, typingByChat, unreadTotal, loadingChats, decryptPreview } = useChat();
   const { onlineIds, connected } = useSocket();
   const { theme, toggle } = useTheme();
@@ -96,9 +96,28 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <button type="button" onClick={onNewChat} className="pill-btn" title="New chat">＋ Chat</button>
-        <button type="button" onClick={onNewGroup} className="pill-btn" title="New group">＋ Group</button>
+        <button
+          type="button"
+          onClick={onNewChat}
+          className="pill-btn"
+          title={identityReady ? 'New chat' : 'Unlock encryption keys first'}
+          disabled={!identityReady}
+        >
+          ＋ Chat
+        </button>
+        <button
+          type="button"
+          onClick={onNewGroup}
+          className="pill-btn"
+          title={identityReady ? 'New group' : 'Unlock encryption keys first'}
+          disabled={!identityReady}
+        >
+          ＋ Group
+        </button>
       </div>
+      {!identityReady && (
+        <div className="lock-banner">🔒 Enter your password to unlock encryption</div>
+      )}
 
       <div className="chat-list">
         {loadingChats && chatList.length === 0 && <p className="empty-hint">Loading…</p>}

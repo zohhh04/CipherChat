@@ -119,6 +119,7 @@ Full design, threat model and known limitations: [`docs/ENCRYPTION.md`](docs/ENC
 * [Socket.IO events](docs/SOCKET_EVENTS.md)
 * [Encryption design](docs/ENCRYPTION.md)
 * [Deployment guide](docs/DEPLOYMENT.md)
+* [Version History](VERSIONS.md)
 
 ## Test accounts
 
