@@ -89,6 +89,7 @@ export function ChatProvider({ children }) {
         sender: String(m.sender),
         type: m.type,
         deletedAt: m.deletedAt || null,
+        editedAt: m.editedAt || null,
         createdAt: m.createdAt,
         deliveredTo: (m.deliveredTo || []).map(String),
         readBy: (m.readBy || []).map(String),
@@ -243,6 +244,28 @@ export function ChatProvider({ children }) {
       ),
     }));
   }, []);
+
+  const editMessage = useCallback(
+    async (chatId, messageId, newText) => {
+      const chat = chats[String(chatId)];
+      if (!chat) throw new Error('Chat not loaded');
+      const key = await ensureChatKey(chat);
+      const payload = await encryptWithKey(key, JSON.stringify({ t: 'text', x: newText }));
+      await messagesApi.edit(chatId, messageId, {
+        iv: payload.iv,
+        ciphertext: payload.ciphertext,
+      });
+      setMessagesByChat((prev) => ({
+        ...prev,
+        [String(chatId)]: (prev[String(chatId)] || []).map((m) =>
+          m.id === String(messageId)
+            ? { ...m, text: newText, editedAt: new Date().toISOString() }
+            : m
+        ),
+      }));
+    },
+    [chats, ensureChatKey]
+  );
 
   const createDirect = useCallback(
     async (peerId) => {
@@ -420,7 +443,7 @@ export function ChatProvider({ children }) {
 
     offs.push(
       subscribe('message:new', ({ chatId, message, toSelf }) => {
-        void toSelf;
+        if (toSelf) return;
         (async () => {
           const cid = String(chatId);
           let chat = chatsRef.current[cid];
@@ -510,6 +533,27 @@ export function ChatProvider({ children }) {
     );
 
     offs.push(
+      subscribe('message:edited', ({ chatId, messageId, iv, ciphertext, editedAt }) => {
+        (async () => {
+          const cid = String(chatId);
+          let chat = chatsRef.current[cid];
+          if (!chat) chat = (await refreshChats())[cid];
+          if (!chat) return;
+          const content = await decryptContent(chat, iv, ciphertext);
+          if (!content) return;
+          setMessagesByChat((prev) => ({
+            ...prev,
+            [cid]: (prev[cid] || []).map((m) =>
+              m.id === String(messageId)
+                ? { ...m, text: content.t === 'text' ? content.x : m.text, editedAt }
+                : m
+            ),
+          }));
+        })();
+      })
+    );
+
+    offs.push(
       subscribe('typing', ({ chatId, userId, username, typing }) => {
         if (userId === user.id) return;
         setTypingByChat((prev) => {
@@ -583,6 +627,7 @@ export function ChatProvider({ children }) {
       sendText,
       sendFile,
       deleteMessage,
+      editMessage,
       createDirect,
       createGroup,
       addMember,
@@ -597,7 +642,7 @@ export function ChatProvider({ children }) {
     }),
     [
       chats, activeChatId, messagesByChat, typingByChat, loadingChats, unreadTotal,
-      openChat, sendText, sendFile, deleteMessage, createDirect, createGroup,
+      openChat, sendText, sendFile, deleteMessage, editMessage, createDirect, createGroup,
       addMember, removeMemberAndRotate, leaveChat, rotateGroupKeyManually, notifyTyping, decryptPreview, refreshChats, loadMessages, getPublicKeyFor,
     ]
   );

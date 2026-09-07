@@ -1,5 +1,10 @@
 const User = require('../models/User');
 const Session = require('../models/Session');
+const Chat = require('../models/Chat');
+const Message = require('../models/Message');
+const Notification = require('../models/Notification');
+const File = require('../models/File');
+const Group = require('../models/Group');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const { revokeAllForUser } = require('../services/token.service');
@@ -104,4 +109,42 @@ const revokeSession = catchAsync(async (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { me, keysOf, search, updateMe, changePassword, saveKeys, getBackup, mySessions, revokeSession };
+const deleteMe = catchAsync(async (req, res) => {
+  const userId = req.user._id;
+
+  // Revoke all sessions
+  await revokeAllForUser(userId);
+
+  // Remove user from all chats
+  const userChats = await Chat.find({ 'members.user': userId });
+  for (const chat of userChats) {
+    chat.members = chat.members.filter((m) => String(m.user._id || m.user) !== String(userId));
+    chat.keyWraps.delete(String(userId));
+    if (chat.members.length === 0) {
+      await Chat.deleteOne({ _id: chat._id });
+      if (chat.groupInfo) await Group.deleteOne({ _id: chat.groupInfo });
+    } else {
+      chat.lastActivity = new Date();
+      await chat.save();
+    }
+  }
+
+  // Wipe all messages sent by user
+  await Message.updateMany(
+    { sender: userId },
+    { $set: { iv: '', ciphertext: '', file: null, deletedAt: new Date() } }
+  );
+
+  // Delete notifications
+  await Notification.deleteMany({ $or: [{ user: userId }, { actor: userId }] });
+
+  // Delete the user
+  await User.deleteOne({ _id: userId });
+
+  audit('auth.account.deleted', { actorId: userId, severity: 'critical', req });
+
+  res.clearCookie(require('../services/token.service').refreshCookieName(), { path: '/api/auth' });
+  res.json({ ok: true, message: 'Account deleted' });
+});
+
+module.exports = { me, keysOf, search, updateMe, changePassword, saveKeys, getBackup, mySessions, revokeSession, deleteMe };

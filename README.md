@@ -121,6 +121,34 @@ Full design, threat model and known limitations: [`docs/ENCRYPTION.md`](docs/ENC
 * [Deployment guide](docs/DEPLOYMENT.md)
 * [Version History](VERSIONS.md)
 
+## How to Create Chats & Groups
+
+### Creating a Direct Chat (1-to-1)
+1. **Unlock your encryption keys** — Enter your password on the lock screen
+2. Click the **＋ Chat** button in the sidebar
+3. Search for a user by username or email
+4. Click on the user to select them
+5. Click **Start Chat**
+
+### Creating a Group Chat
+1. **Unlock your encryption keys** — Enter your password on the lock screen
+2. Click the **＋ Group** button in the sidebar
+3. Enter a group name
+4. Add an optional description
+5. Search and select members by clicking on them
+6. Click **Create group (N)** where N is the total member count
+
+### Making Calls
+1. Open a direct (1-to-1) chat
+2. Click the **📞** (voice) or **🎥** (video) button in the chat header
+3. Wait for the other person to answer
+
+### Important Notes
+- You **must unlock your encryption keys** before creating chats or groups
+- The **＋ Chat** and **＋ Group** buttons are disabled until keys are unlocked
+- Other users must have logged in at least once to have encryption keys set up
+- You cannot create chats with users who haven't set up their keys yet
+
 ## Test accounts
 
 Register two users through the UI (verification link appears in the API console when SMTP

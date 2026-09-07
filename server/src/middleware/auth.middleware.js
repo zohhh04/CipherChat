@@ -16,7 +16,7 @@ async function requireAuth(req, _res, next) {
       throw ApiError.unauthorized(expired ? 'Access token expired' : 'Invalid access token', expired ? 'token_expired' : 'token_invalid');
     }
 
-    const user = await User.findById(payload.sub);
+    const user = await User.findById(payload.sub).select('+publicKey');
     if (!user) throw ApiError.unauthorized('User no longer exists', 'user_gone');
     if (user.isBanned) throw ApiError.forbidden('Account suspended', 'account_banned');
 

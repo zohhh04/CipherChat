@@ -17,6 +17,7 @@ export default function SettingsPage() {
   const [fp, setFp] = useState('');
   const [pw, setPw] = useState({ current: '', next: '', confirm: '' });
   const [busy, setBusy] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
 
   const loadSessions = useCallback(async () => {
     try {
@@ -29,8 +30,15 @@ export default function SettingsPage() {
 
   useEffect(() => {
     loadSessions();
-    if (publicKey) fingerprint(publicKey).then(setFp).catch(() => {});
-  }, [loadSessions, publicKey]);
+  }, [loadSessions]);
+
+  useEffect(() => {
+    if (publicKey && publicKey.length > 0) {
+      fingerprint(publicKey).then(setFp).catch(() => setFp('Unable to generate'));
+    } else if (identityReady) {
+      setFp('No public key found');
+    }
+  }, [publicKey, identityReady]);
 
   const saveProfile = async () => {
     setBusy(true);
@@ -88,6 +96,25 @@ export default function SettingsPage() {
       toast('All other sessions revoked', 'success');
     } catch (err) {
       toast(apiError(err).message, 'error');
+    }
+  };
+
+  const deleteAccount = async () => {
+    if (deleteConfirm !== 'DELETE') {
+      toast('Type DELETE to confirm', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      await usersApi.deleteAccount();
+      toast('Account deleted', 'success');
+      setTimeout(() => {
+        window.location.assign('/login');
+      }, 1000);
+    } catch (err) {
+      toast(apiError(err).message, 'error');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -269,8 +296,20 @@ export default function SettingsPage() {
           <p className="muted">
             Once you delete your account, there is no going back. Please be certain.
           </p>
-          <button type="button" className="btn danger" disabled>
-            Delete Account
+          <input
+            className="text-input"
+            type="text"
+            placeholder='Type "DELETE" to confirm'
+            value={deleteConfirm}
+            onChange={(e) => setDeleteConfirm(e.target.value)}
+          />
+          <button
+            type="button"
+            className="btn danger"
+            onClick={deleteAccount}
+            disabled={busy || deleteConfirm !== 'DELETE'}
+          >
+            {busy ? 'Deleting...' : 'Delete Account'}
           </button>
         </section>
       </div>

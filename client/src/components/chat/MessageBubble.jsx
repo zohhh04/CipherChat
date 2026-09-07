@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import FileAttachment from './FileAttachment';
 import { timeShort } from '../../utils/format';
 
@@ -11,12 +12,29 @@ function Ticks({ message, myId }) {
   return <span className="ticks" title="Sent">✓</span>;
 }
 
-export default function MessageBubble({ message, chat, myId }) {
+export default function MessageBubble({ message, chat, myId, onEdit, onReply }) {
   const mine = message.sender === myId;
   const senderName = chat.members.find((m) => m.id === message.sender)?.username || 'Unknown';
+  const [showMenu, setShowMenu] = useState(false);
+
+  const handleContextMenu = (e) => {
+    if (!mine || message.deletedAt) return;
+    e.preventDefault();
+    setShowMenu(!showMenu);
+  };
+
+  const handleEdit = () => {
+    setShowMenu(false);
+    onEdit && onEdit(message);
+  };
+
+  const handleReply = () => {
+    setShowMenu(false);
+    onReply && onReply(message);
+  };
 
   return (
-    <div className={`bubble-row ${mine ? 'mine' : 'theirs'}`}>
+    <div className={`bubble-row ${mine ? 'mine' : 'theirs'}`} onContextMenu={handleContextMenu}>
       <div className="bubble">
         {!mine && chat.type === 'group' && <span className="bubble-author">{senderName}</span>}
         {message.deletedAt ? (
@@ -31,8 +49,16 @@ export default function MessageBubble({ message, chat, myId }) {
         )}
         <span className="bubble-meta">
           {timeShort(message.createdAt)}
+          {message.editedAt && <span className="edited-label"> (edited)</span>}
           <Ticks message={message} myId={myId} />
         </span>
+        {showMenu && (
+          <div className="message-context-menu">
+            {mine && <button type="button" onClick={handleEdit}>Edit</button>}
+            <button type="button" onClick={handleReply}>Reply</button>
+            <button type="button" onClick={() => setShowMenu(false)}>Cancel</button>
+          </div>
+        )}
       </div>
     </div>
   );

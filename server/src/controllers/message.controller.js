@@ -99,6 +99,7 @@ const list = catchAsync(async (req, res) => {
         replyTo: m.replyTo ? String(m.replyTo) : null,
         deliveredTo: (m.deliveredTo || []).map(String),
         readBy: (m.readBy || []).map(String),
+        editedAt: m.editedAt,
         deletedAt: m.deletedAt,
         createdAt: m.createdAt,
       })),
@@ -173,4 +174,32 @@ const deleteMessage = catchAsync(async (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { send, list, markRead, markDelivered, deleteMessage };
+const editMessage = catchAsync(async (req, res) => {
+  const message = await Message.findById(req.params.mid);
+  if (!message) throw ApiError.notFound('Message not found', 'message_not_found');
+
+  const isSender = String(message.sender) === String(req.user._id);
+  if (!isSender) throw ApiError.forbidden('Only the sender can edit a message', 'not_owner');
+
+  if (message.deletedAt) throw ApiError.badRequest('Cannot edit a deleted message', 'message_deleted');
+
+  message.iv = req.body.iv;
+  message.ciphertext = req.body.ciphertext;
+  message.editedAt = new Date();
+  await message.save();
+
+  const io = req.app.get('io');
+  if (io) {
+    io.to(`chat:${String(message.chat)}`).emit('message:edited', {
+      chatId: String(message.chat),
+      messageId: String(message._id),
+      iv: message.iv,
+      ciphertext: message.ciphertext,
+      editedAt: message.editedAt,
+    });
+  }
+
+  res.json({ ok: true });
+});
+
+module.exports = { send, list, markRead, markDelivered, deleteMessage, editMessage };

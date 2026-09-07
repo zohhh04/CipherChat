@@ -105,9 +105,24 @@
   - Prevented users from opening modals before keys are ready
   - Added helpful tooltips explaining why buttons are disabled
 
+- **Fixed fingerprint showing "Generating…" forever**
+  - Root cause: `publicKey` field had `select: false` in User model
+  - Server auth middleware wasn't selecting `publicKey` field
+  - Fixed by adding `.select('+publicKey')` to auth middleware
+  - Settings page now shows fingerprint correctly after unlock
+  - Added better error messages for fingerprint generation
+
 ### Improvements
 - Sidebar now shows `identityReady` state
 - Better error prevention for encryption-dependent actions
+- Fingerprint section shows "No public key found" if keys aren't set up
+- Fingerprint shows "Unable to generate" if crypto fails
+
+### Usage Instructions Added
+- How to create direct chats
+- How to create group chats
+- How to make voice/video calls
+- Important notes about encryption keys
 
 ---
 

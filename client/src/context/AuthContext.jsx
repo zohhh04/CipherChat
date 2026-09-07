@@ -88,9 +88,13 @@ export function AuthProvider({ children }) {
         setAccessToken(data.accessToken);
         setUser(data.user);
 
-        const stored = await usersApi.getKeysBackup().catch(() => null);
-        if (stored && stored.publicKey) {
-          setPublicKey(stored.publicKey);
+        try {
+          const stored = await usersApi.getKeysBackup();
+          if (stored && stored.publicKey) {
+            setPublicKey(stored.publicKey);
+          }
+        } catch {
+          void 0;
         }
       } catch {
         void 0;

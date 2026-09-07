@@ -27,6 +27,7 @@ export const usersApi = {
   publicKeys: (ids) => http.get('/users/public-keys', { params: { ids: ids.join(',') } }).then(unwrap),
   sessions: () => http.get('/users/me/sessions').then(unwrap),
   revokeSession: (id) => http.delete(`/users/me/sessions/${id}`).then((r) => r.data),
+  deleteAccount: () => http.delete('/users/me').then((r) => r.data),
 };
 
 export const chatsApi = {
@@ -59,6 +60,8 @@ export const messagesApi = {
       .then(unwrap),
   markRead: (chatId, ids) => http.post(`/chats/${chatId}/read`, { ids }),
   markDelivered: (chatId, ids) => http.post(`/chats/${chatId}/delivered`, { ids }),
+  edit: (chatId, messageId, payload) =>
+    http.patch(`/chats/${chatId}/messages/${messageId}`, payload).then((r) => r.data),
   remove: (chatId, messageId) => http.delete(`/chats/${chatId}/messages/${messageId}`),
 };
 

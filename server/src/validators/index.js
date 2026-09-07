@@ -122,6 +122,14 @@ const messageIdParam = {
   params: z.object({ id: objectId, mid: objectId }),
 };
 
+const editMessage = {
+  params: z.object({ id: objectId, mid: objectId }),
+  body: z.object({
+    iv: b64(40),
+    ciphertext: b64(500000),
+  }).strict(),
+};
+
 const uploadFile = {
   params: z.object({ id: objectId }),
   body: z.object({ nameIv: b64(40), nameCt: b64(5000), mimeHint: z.string().max(100).default('') }),
@@ -131,5 +139,5 @@ module.exports = {
   register, login, verifyEmail, forgotPassword, resetPassword,
   updateMe, changePassword, saveKeys, searchUsers,
   createDirectChat, createGroupChat, chatIdParam, updateGroup, addMembers, removeMember, rotateKeys,
-  sendMessage, listMessages, messageIdParam, uploadFile,
+  sendMessage, listMessages, messageIdParam, editMessage, uploadFile,
 };
