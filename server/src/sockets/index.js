@@ -3,8 +3,10 @@ const config = require('../config');
 const logger = require('../config/logger');
 const User = require('../models/User');
 const Chat = require('../models/Chat');
+const Notification = require('../models/Notification');
 const { verifyAccessToken } = require('../services/token.service');
 const { PresenceService } = require('../services/presence.service');
+const { NOTIFICATION_TYPES } = require('../utils/constants');
 
 function initSockets(httpServer) {
   const io = new Server(httpServer, {
@@ -104,6 +106,13 @@ function initSockets(httpServer) {
       activeCalls.delete(to);
       activeCalls.delete(userId);
       io.to(`user:${to}`).emit('call:ended', { from: userId });
+
+      Notification.create({
+        user: to,
+        actor: userId,
+        type: NOTIFICATION_TYPES.CALL,
+      }).catch(() => {});
+      io.to(`user:${to}`).emit('notification:new', { type: 'call' });
     });
 
     socket.on('disconnect', async () => {

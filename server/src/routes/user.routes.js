@@ -13,7 +13,7 @@ router.put('/me/keys', validate(v.saveKeys), ctrl.saveKeys);
 router.get('/me/keys', ctrl.getBackup);
 router.get('/me/sessions', ctrl.mySessions);
 router.delete('/me/sessions/:id', ctrl.revokeSession);
-router.delete('/me', ctrl.deleteMe);
+router.delete('/me', validate(v.deleteAccount), ctrl.deleteAccount);
 
 router.get('/', validate(v.searchUsers), ctrl.search);
 router.get('/public-keys', ctrl.keysOf);

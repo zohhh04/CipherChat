@@ -3,12 +3,16 @@ const Session = require('../models/Session');
 const Chat = require('../models/Chat');
 const Message = require('../models/Message');
 const Notification = require('../models/Notification');
+const Token = require('../models/Token');
 const File = require('../models/File');
-const Group = require('../models/Group');
+const AuditLog = require('../models/AuditLog');
+const fs = require('fs');
+const path = require('path');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const { revokeAllForUser } = require('../services/token.service');
 const { audit } = require('../services/audit.service');
+const { NOTIFICATION_TYPES } = require('../utils/constants');
 
 const me = catchAsync(async (req, res) => {
   const sessions = await Session.countDocuments({ user: req.user._id, revokedAt: null });
@@ -69,6 +73,14 @@ const changePassword = catchAsync(async (req, res) => {
   await revokeAllForUser(user._id);
   audit('auth.password.changed', { actorId: user._id, severity: 'warn', req });
 
+  await Notification.create({
+    user: user._id,
+    type: NOTIFICATION_TYPES.SYSTEM,
+  }).catch(() => {});
+
+  const io = req.app.get('io');
+  if (io) io.to(`user:${String(user._id)}`).emit('notification:new', { type: 'system' });
+
   res.clearCookie(require('../services/token.service').refreshCookieName(), { path: '/api/auth' });
   res.json({ ok: true, message: 'Password changed - sign in again on all devices' });
 });
@@ -109,42 +121,73 @@ const revokeSession = catchAsync(async (req, res) => {
   res.json({ ok: true });
 });
 
-const deleteMe = catchAsync(async (req, res) => {
-  const userId = req.user._id;
+const deleteAccount = catchAsync(async (req, res) => {
+  const { password } = req.body;
+  if (!password) throw ApiError.badRequest('Password is required', 'password_required');
 
-  // Revoke all sessions
-  await revokeAllForUser(userId);
+  const user = await User.findById(req.user._id).select('+passwordHash');
+  const ok = await user.comparePassword(password);
+  if (!ok) throw ApiError.unauthorized('Incorrect password', 'invalid_credentials');
 
-  // Remove user from all chats
-  const userChats = await Chat.find({ 'members.user': userId });
-  for (const chat of userChats) {
-    chat.members = chat.members.filter((m) => String(m.user._id || m.user) !== String(userId));
-    chat.keyWraps.delete(String(userId));
+  const userId = String(user._id);
+
+  const chats = await Chat.find({ 'members.user': user._id }).select('_id');
+  const chatIds = chats.map((c) => c._id);
+
+  if (chatIds.length > 0) {
+    const messages = await Message.find({ chat: { $in: chatIds }, sender: user._id }).select('_id');
+    const msgIds = messages.map((m) => m._id);
+
+    await Message.updateMany(
+      { chat: { $in: chatIds }, sender: user._id },
+      { $set: { iv: '', ciphertext: '', deletedAt: new Date(), file: null } }
+    );
+
+    if (msgIds.length > 0) {
+      const files = await File.find({ _id: { $in: (await Message.find({ _id: { $in: msgIds }, file: { $ne: null } }).select('file')).map((m) => m.file) } });
+      for (const f of files) {
+        const filePath = path.join(require('../middleware/upload.middleware').uploadDir, f.storagePath);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      }
+      await File.deleteMany({ _id: { $in: files.map((f) => f._id) } });
+    }
+  }
+
+  for (const chat of chats) {
+    chat.members = chat.members.filter((m) => String(m.user._id || m.user) !== userId);
+    chat.keyWraps.delete(userId);
     if (chat.members.length === 0) {
-      await Chat.deleteOne({ _id: chat._id });
-      if (chat.groupInfo) await Group.deleteOne({ _id: chat.groupInfo });
+      await Message.deleteMany({ chat: chat._id });
+      await File.deleteMany({ chat: chat._id });
+      await chat.deleteOne();
     } else {
       chat.lastActivity = new Date();
       await chat.save();
     }
   }
 
-  // Wipe all messages sent by user
-  await Message.updateMany(
-    { sender: userId },
-    { $set: { iv: '', ciphertext: '', file: null, deletedAt: new Date() } }
-  );
+  await Notification.deleteMany({ $or: [{ user: user._id }, { actor: user._id }] });
+  await Session.deleteMany({ user: user._id });
+  await Token.deleteMany({ user: user._id });
+  await AuditLog.deleteMany({ actor: user._id });
 
-  // Delete notifications
-  await Notification.deleteMany({ $or: [{ user: userId }, { actor: userId }] });
+  await User.deleteOne({ _id: user._id });
 
-  // Delete the user
-  await User.deleteOne({ _id: userId });
-
-  audit('auth.account.deleted', { actorId: userId, severity: 'critical', req });
+  audit('auth.account.deleted', { actorId: user._id, email: user.email, severity: 'critical', req });
 
   res.clearCookie(require('../services/token.service').refreshCookieName(), { path: '/api/auth' });
-  res.json({ ok: true, message: 'Account deleted' });
+
+  const io = req.app.get('io');
+  if (io) {
+    for (const chat of chats) {
+      const memberIds = chat.members.map((m) => String(m.user._id || m.user));
+      for (const uid of memberIds) {
+        io.to(`user:${uid}`).emit('chat:updated', { chatId: String(chat._id) });
+      }
+    }
+  }
+
+  res.json({ ok: true, message: 'Account deleted permanently' });
 });
 
-module.exports = { me, keysOf, search, updateMe, changePassword, saveKeys, getBackup, mySessions, revokeSession, deleteMe };
+module.exports = { me, keysOf, search, updateMe, changePassword, saveKeys, getBackup, mySessions, revokeSession, deleteAccount };

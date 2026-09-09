@@ -6,7 +6,7 @@ const list = catchAsync(async (req, res) => {
     .sort('-createdAt')
     .limit(30)
     .populate('actor', 'username')
-    .select('type actor chat message read createdAt');
+    .select('type actor chat message read urgency urgencyReason createdAt');
 
   res.json({
     ok: true,
@@ -17,6 +17,8 @@ const list = catchAsync(async (req, res) => {
         actor: n.actor ? { id: n.actor._id, username: n.actor.username } : null,
         chatId: n.chat,
         read: n.read,
+        urgency: n.urgency || 'normal',
+        urgencyReason: n.urgencyReason || '',
         createdAt: n.createdAt,
       })),
       unreadCount: await Notification.countDocuments({ user: req.user._id, read: false }),

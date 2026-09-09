@@ -11,6 +11,7 @@ router.use('/users', require('./user.routes'));
 router.use('/chats', require('./chat.routes'));
 router.use('/notifications', require('./notification.routes'));
 router.use('/admin', require('./admin.routes'));
+router.use('/ai', require('./ai.routes'));
 
 router.get('/csrf-token', (req, res) => {
   const crypto = require('crypto');

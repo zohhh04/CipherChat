@@ -161,7 +161,11 @@ const forgotPassword = catchAsync(async (req, res) => {
       expiresAt: new Date(Date.now() + 30 * 60 * 1000),
     });
     const mail = emailService.resetEmail(user, rawToken);
-    await emailService.sendMail({ to: user.email, ...mail });
+    try {
+      await emailService.sendMail({ to: user.email, ...mail });
+    } catch (mailErr) {
+      console.error('Failed to send reset email:', mailErr.message);
+    }
     audit('auth.password.reset_request', { actorId: user._id, email: user.email, severity: 'warn', req });
 
     if (devTokenEnabled()) {

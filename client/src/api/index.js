@@ -27,7 +27,7 @@ export const usersApi = {
   publicKeys: (ids) => http.get('/users/public-keys', { params: { ids: ids.join(',') } }).then(unwrap),
   sessions: () => http.get('/users/me/sessions').then(unwrap),
   revokeSession: (id) => http.delete(`/users/me/sessions/${id}`).then((r) => r.data),
-  deleteAccount: () => http.delete('/users/me').then((r) => r.data),
+  deleteAccount: (password) => http.delete('/users/me', { data: { password } }).then((r) => r.data),
 };
 
 export const chatsApi = {
@@ -60,9 +60,10 @@ export const messagesApi = {
       .then(unwrap),
   markRead: (chatId, ids) => http.post(`/chats/${chatId}/read`, { ids }),
   markDelivered: (chatId, ids) => http.post(`/chats/${chatId}/delivered`, { ids }),
-  edit: (chatId, messageId, payload) =>
-    http.patch(`/chats/${chatId}/messages/${messageId}`, payload).then((r) => r.data),
   remove: (chatId, messageId) => http.delete(`/chats/${chatId}/messages/${messageId}`),
+  edit: (chatId, messageId, payload) => http.patch(`/chats/${chatId}/messages/${messageId}`, payload),
+  addReaction: (chatId, messageId, emoji) => http.post(`/chats/${chatId}/messages/${messageId}/reactions`, { emoji }),
+  removeReaction: (chatId, messageId, emoji) => http.delete(`/chats/${chatId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`),
 };
 
 export const filesApi = {
@@ -89,6 +90,26 @@ export const filesApi = {
 export const notificationsApi = {
   list: () => http.get('/notifications').then(unwrap),
   readAll: () => http.post('/notifications/read-all'),
+};
+
+export const aiApi = {
+  summarize: (chatId, style = 'brief') =>
+    http.post(`/ai/summarize/${chatId}`, { style }).then(unwrap),
+  smartReplies: (chatId, context = '', messages = []) =>
+    http.post(`/ai/smart-replies/${chatId}`, { context, messages }).then(unwrap),
+  translate: (text, targetLang = 'en') =>
+    http.post('/ai/translate', { text, targetLang }).then(unwrap),
+  transcribe: async (audioBlob, language = null) => {
+    const form = new FormData();
+    form.append('audio', audioBlob, 'voice.webm');
+    if (language) form.append('language', language);
+    const res = await http.post('/ai/transcribe', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data.data;
+  },
+  detectUrgency: (messages) =>
+    http.post('/ai/detect-urgency', { messages }).then(unwrap),
 };
 
 export const adminApi = {

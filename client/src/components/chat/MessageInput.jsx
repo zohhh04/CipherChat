@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { Twemoji } from '../common/EmojiText';
 import { useChat } from '../../context/ChatContext';
 import { toast } from '../common/Toast';
 
 const EMOJIS = ['😀', '😂', '🥲', '😍', '👍', '🙏', '🔥', '🎉', '❤️', '😢', '😮', '🤔'];
 
-export default function MessageInput({ chatId }) {
+export default function MessageInput({ chatId, editingMessage, onEditSubmit, onEditCancel, replyTo, onReplyCancel }) {
   const { sendText, sendFile, notifyTyping } = useChat();
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -17,15 +18,23 @@ export default function MessageInput({ chatId }) {
 
   useEffect(() => {
     setText('');
-  }, [chatId]);
+    if (editingMessage) {
+      setText(editingMessage.text || '');
+    }
+  }, [chatId, editingMessage]);
 
   const handleSendText = async () => {
     const trimmed = text.trim();
     if (!trimmed || busy) return;
     setBusy(true);
     try {
-      await sendText(chatId, trimmed);
+      if (editingMessage) {
+        await onEditSubmit(trimmed);
+      } else {
+        await sendText(chatId, trimmed, replyTo ? replyTo.id : undefined);
+      }
       setText('');
+      if (onReplyCancel) onReplyCancel();
       notifyTyping(chatId, false);
     } catch (e) {
       toast(e.message || 'Failed to send message', 'error');
@@ -98,9 +107,25 @@ export default function MessageInput({ chatId }) {
 
   return (
     <div className="message-input">
+      {editingMessage && (
+        <div className="edit-bar">
+          <span className="edit-indicator"><Twemoji>✏️</Twemoji> Editing message</span>
+          <button type="button" className="icon-btn" onClick={onEditCancel} title="Cancel editing"><Twemoji>✕</Twemoji></button>
+        </div>
+      )}
+      {replyTo && !editingMessage && (
+        <div className="reply-bar">
+          <div className="reply-bar-content">
+            <span className="reply-bar-author">Replying to {replyTo.sender}</span>
+            <span className="reply-bar-text">{replyTo.text || (replyTo.file ? '[File]' : '...')}</span>
+          </div>
+          <button type="button" className="icon-btn" onClick={onReplyCancel} title="Cancel reply"><Twemoji>✕</Twemoji></button>
+        </div>
+      )}
       {recording ? (
         <div className="record-bar">
-          <span className="rec-dot" /> Recording… tap send to stop
+          <span className="rec-dot" />
+          <span>Recording… tap send to stop</span>
           <button type="button" className="send-btn" onClick={stopRecording} disabled={busy}>
             ➤
           </button>
@@ -117,14 +142,14 @@ export default function MessageInput({ chatId }) {
             </div>
           )}
           <button type="button" className="icon-btn" title="Emoji" onClick={() => setShowEmoji((s) => !s)}>
-            😊
+            <Twemoji>😊</Twemoji>
           </button>
           <label className={`icon-btn attach-label ${busy ? 'disabled' : ''}`} title="Attach image/video">
-            🖼️
+            <Twemoji>🖼️</Twemoji>
             <input type="file" accept="image/*,video/*" hidden onChange={handleFilePick('image/*,video/*', 'file')} />
           </label>
           <label className={`icon-btn attach-label ${busy ? 'disabled' : ''}`} title="Attach document/PDF">
-            📎
+            <Twemoji>📎</Twemoji>
             <input type="file" hidden onChange={handleFilePick('*', 'file')} />
           </label>
           <textarea
@@ -146,7 +171,7 @@ export default function MessageInput({ chatId }) {
           />
           {text.trim() ? (
             <button type="button" className="send-btn" onClick={handleSendText} disabled={busy} aria-label="Send">
-              ➤
+              <Twemoji>➤</Twemoji>
             </button>
           ) : (
             <button
@@ -156,7 +181,7 @@ export default function MessageInput({ chatId }) {
               disabled={busy}
               aria-label="Record voice note"
             >
-              🎤
+              <Twemoji>🎤</Twemoji>
             </button>
           )}
         </>

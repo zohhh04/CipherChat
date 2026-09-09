@@ -38,13 +38,17 @@ function errorHandler(err, req, res, _next) {
   if (err.name === 'CastError') {
     statusCode = 400;
     code = 'invalid_id';
-    message = 'Invalid identifier';
+    message = `Invalid identifier: ${err.path} = ${err.value}`;
+    console.error('[CastError]', err.path, err.value, err.kind);
   } else if (err.name === 'ValidationError' && err.errors) {
     statusCode = 422;
     code = 'validation_error';
+    console.error('[ValidationError]', err.message);
   } else if (statusCode === 500) {
-    logger.error({ err, url: req.originalUrl }, 'Unhandled error');
+    console.error('[500 Error]', err.name, err.message, err.stack);
     message = config.isProd ? 'Internal server error' : message;
+  } else {
+    console.error(`[${statusCode}]`, err.name, err.message);
   }
 
   res.status(statusCode).json({

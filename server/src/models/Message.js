@@ -13,6 +13,8 @@ const messageSchema = new mongoose.Schema(
     file: { type: mongoose.Schema.Types.ObjectId, ref: 'File', default: null },
     replyTo: { type: mongoose.Schema.Types.ObjectId, ref: 'Message', default: null },
 
+    reactions: { type: Map, of: [mongoose.Schema.Types.ObjectId] },
+
     deliveredTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 

@@ -2,9 +2,10 @@ const Chat = require('../models/Chat');
 const Group = require('../models/Group');
 const Message = require('../models/Message');
 const User = require('../models/User');
+const Notification = require('../models/Notification');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
-const { CHAT_TYPES } = require('../utils/constants');
+const { CHAT_TYPES, NOTIFICATION_TYPES } = require('../utils/constants');
 const { audit } = require('../services/audit.service');
 
 const MEMBER_POPULATE = 'username about theme';
@@ -54,6 +55,7 @@ const listMyChats = catchAsync(async (req, res) => {
             }
           : null,
         keyWraps: Object.fromEntries(c.keyWraps || []),
+        createdBy: c.createdBy,
         lastActivity: c.lastActivity,
         createdAt: c.createdAt,
         unreadCount: unread,
@@ -123,6 +125,21 @@ const createGroup = catchAsync(async (req, res) => {
   await group.save();
 
   audit('group.created', { actorId: req.user._id, req, meta: { chatId: String(chat._id), name } });
+
+  const io = req.app.get('io');
+  const notifRecipients = uniqueIds.filter((uid) => uid !== String(req.user._id));
+  const notifications = notifRecipients.map((uid) => ({
+    user: uid,
+    actor: req.user._id,
+    type: NOTIFICATION_TYPES.GROUP,
+    chat: chat._id,
+  }));
+  await Notification.insertMany(notifications, { ordered: false }).catch(() => {});
+  if (io) {
+    for (const uid of notifRecipients) {
+      io.to(`user:${uid}`).emit('notification:new', { chatId: String(chat._id), type: 'group' });
+    }
+  }
 
   res.status(201).json({ ok: true, data: { chatId: chat._id } });
 });
@@ -194,6 +211,14 @@ const addMembers = catchAsync(async (req, res) => {
     for (const uid of newIds) io.to(`user:${uid}`).emit('chat:new', { chatId: String(chat._id) });
   }
 
+  const addedNotifs = newIds.filter((uid) => uid !== String(req.user._id)).map((uid) => ({
+    user: uid,
+    actor: req.user._id,
+    type: NOTIFICATION_TYPES.GROUP,
+    chat: chat._id,
+  }));
+  await Notification.insertMany(addedNotifs, { ordered: false }).catch(() => {});
+
   res.json({ ok: true });
 });
 
@@ -212,6 +237,17 @@ const removeMember = catchAsync(async (req, res) => {
 
   notifyRotationRequired(req, chat, targetId);
   emitTo(req, 'chat:updated', { chatId: String(chat._id) });
+
+  if (String(targetId) !== String(req.user._id)) {
+    await Notification.create({
+      user: targetId,
+      actor: req.user._id,
+      type: NOTIFICATION_TYPES.GROUP,
+      chat: chat._id,
+    }).catch(() => {});
+    const io = req.app.get('io');
+    if (io) io.to(`user:${targetId}`).emit('notification:new', { chatId: String(chat._id), type: 'group' });
+  }
 
   res.json({ ok: true, rotationRequired: true });
 });

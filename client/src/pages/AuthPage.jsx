@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { authApi, apiError } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { Twemoji } from '../components/common/EmojiText';
 import { toast } from '../components/common/Toast';
 
 export default function AuthPage({ mode }) {
@@ -14,6 +15,7 @@ export default function AuthPage({ mode }) {
   const [error, setError] = useState('');
   const [info, setInfo] = useState(mode === 'verify-email' ? 'Verifying…' : '');
   const [done, setDone] = useState(false);
+  const [devToken, setDevToken] = useState('');
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -67,7 +69,12 @@ export default function AuthPage({ mode }) {
       } else if (mode === 'forgot') {
         const res = await authApi.forgotPassword(form.email);
         setError('');
-        setInfo(res.message + (res.devResetToken ? '' : ''));
+        if (res.devResetToken) {
+          setInfo('Dev mode: SMTP not configured. Use this token to reset your password:');
+          setDevToken(res.devResetToken);
+        } else {
+          setInfo(res.message);
+        }
       } else if (mode === 'reset') {
         const token = params.get('token');
         if (form.password !== form.confirm) {
@@ -98,7 +105,7 @@ export default function AuthPage({ mode }) {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-brand">
-          <span className="brand-shield">🛡️</span>
+          <span className="brand-shield"><Twemoji>🛡️</Twemoji></span>
           <h1>Secure Chat</h1>
           <p>End-to-end encrypted messaging</p>
         </div>
@@ -106,6 +113,28 @@ export default function AuthPage({ mode }) {
         <h2>{titles[mode]}</h2>
 
         {info && <div className="alert info">{info}</div>}
+        {devToken && (
+          <div className="dev-token-box">
+            <code className="dev-token-value">{devToken}</code>
+            <div className="dev-token-actions">
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => {
+                  navigator.clipboard.writeText(devToken).then(() => toast('Token copied!', 'success'));
+                }}
+              >
+                Copy token
+              </button>
+              <Link
+                className="btn primary sm"
+                to={`/reset-password?token=${devToken}`}
+              >
+                Use token to reset
+              </Link>
+            </div>
+          </div>
+        )}
         {error && <div className="alert error">{error}</div>}
 
         {(mode === 'verify-email' || done) && (

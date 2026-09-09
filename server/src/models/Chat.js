@@ -27,7 +27,7 @@ const chatSchema = new mongoose.Schema(
 
     keyWraps: {
       type: Map,
-      of: new mongoose.Schema({ iv: String, ct: String }, { _id: false }),
+      of: new mongoose.Schema({ iv: String, ct: String, by: String }, { _id: false }),
       default: {},
     },
 

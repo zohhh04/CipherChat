@@ -67,5 +67,12 @@ module.exports = {
     maxMb: num(process.env.MAX_FILE_MB, 25),
   },
 
+  ai: {
+    apiKey: process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || '',
+    model: process.env.GEMINI_MODEL || process.env.OPENAI_MODEL || 'gemini-2.0-flash',
+    baseURL: process.env.AI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    maxTokens: num(process.env.AI_MAX_TOKENS, 500),
+  },
+
   logPretty: bool(process.env.LOG_PRETTY, !isProd),
 };

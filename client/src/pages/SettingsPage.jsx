@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { usersApi, apiError } from '../api';
+import { usersApi, authApi, apiError } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { fingerprint } from '../crypto/e2ee';
 import Avatar from '../components/common/Avatar';
+import { Twemoji } from '../components/common/EmojiText';
 import { toast } from '../components/common/Toast';
 
 export default function SettingsPage() {
@@ -16,8 +17,9 @@ export default function SettingsPage() {
   const [sessions, setSessions] = useState([]);
   const [fp, setFp] = useState('');
   const [pw, setPw] = useState({ current: '', next: '', confirm: '' });
+  const [deletePw, setDeletePw] = useState('');
   const [busy, setBusy] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [resending, setResending] = useState(false);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -100,17 +102,16 @@ export default function SettingsPage() {
   };
 
   const deleteAccount = async () => {
-    if (deleteConfirm !== 'DELETE') {
-      toast('Type DELETE to confirm', 'error');
+    if (!confirm('Are you absolutely sure? This action is irreversible and will permanently delete your account, all messages, and files.')) return;
+    if (!deletePw) {
+      toast('Enter your password to confirm deletion', 'error');
       return;
     }
     setBusy(true);
     try {
-      await usersApi.deleteAccount();
-      toast('Account deleted', 'success');
-      setTimeout(() => {
-        window.location.assign('/login');
-      }, 1000);
+      await usersApi.deleteAccount(deletePw);
+      toast('Account deleted permanently', 'success');
+      await logout();
     } catch (err) {
       toast(apiError(err).message, 'error');
     } finally {
@@ -120,13 +121,25 @@ export default function SettingsPage() {
 
   const memberSince = user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : 'Unknown';
 
+  const resendVerification = async () => {
+    setResending(true);
+    try {
+      await authApi.resendVerification();
+      toast('Verification email sent. Check your inbox.', 'success');
+    } catch (err) {
+      toast(apiError(err).message, 'error');
+    } finally {
+      setResending(false);
+    }
+  };
+
   return (
     <div className="settings-page">
       <header className="settings-header">
-        <Link to="/app" className="icon-btn" title="Back to chats">←</Link>
+        <Link to="/app" className="icon-btn" title="Back to chats"><Twemoji>←</Twemoji></Link>
         <h2>Settings</h2>
         <button type="button" className="icon-btn" onClick={toggle} title="Toggle theme">
-          {theme === 'dark' ? '☀️' : '🌙'}
+          <Twemoji>{theme === 'dark' ? '☀️' : '🌙'}</Twemoji>
         </button>
       </header>
 
@@ -149,6 +162,11 @@ export default function SettingsPage() {
           <div className={`verify-badge ${user.isVerified ? 'ok' : ''}`}>
             {user.isVerified ? '✔ Email verified' : '⚠ Email not verified'}
           </div>
+          {!user.isVerified && (
+            <button type="button" className="btn sm" onClick={resendVerification} disabled={resending}>
+              {resending ? 'Sending...' : 'Resend verification email'}
+            </button>
+          )}
         </section>
 
         {/* Profile Section */}
@@ -298,18 +316,14 @@ export default function SettingsPage() {
           </p>
           <input
             className="text-input"
-            type="text"
-            placeholder='Type "DELETE" to confirm'
-            value={deleteConfirm}
-            onChange={(e) => setDeleteConfirm(e.target.value)}
+            type="password"
+            placeholder="Enter your password to confirm"
+            value={deletePw}
+            onChange={(e) => setDeletePw(e.target.value)}
+            autoComplete="current-password"
           />
-          <button
-            type="button"
-            className="btn danger"
-            onClick={deleteAccount}
-            disabled={busy || deleteConfirm !== 'DELETE'}
-          >
-            {busy ? 'Deleting...' : 'Delete Account'}
+          <button type="button" className="btn danger" onClick={deleteAccount} disabled={busy || !deletePw}>
+            {busy ? 'Deleting...' : 'Delete Account Permanently'}
           </button>
         </section>
       </div>

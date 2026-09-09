@@ -3,6 +3,51 @@ import { useSocket } from './SocketContext';
 
 const CallContext = createContext(null);
 
+function createRingtone() {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const masterGain = ctx.createGain();
+  masterGain.gain.value = 0.3;
+  masterGain.connect(ctx.destination);
+
+  function playTone(freq, startTime, duration) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, startTime);
+    gain.gain.linearRampToValueAtTime(0.25, startTime + 0.02);
+    gain.gain.setValueAtTime(0.25, startTime + duration - 0.05);
+    gain.gain.linearRampToValueAtTime(0, startTime + duration);
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start(startTime);
+    osc.stop(startTime + duration);
+  }
+
+  function ring() {
+    const now = ctx.currentTime;
+    for (let i = 0; i < 3; i++) {
+      const offset = i * 0.8;
+      playTone(440, now + offset, 0.35);
+      playTone(480, now + offset, 0.35);
+    }
+  }
+
+  let interval = null;
+
+  return {
+    start() {
+      if (interval) return;
+      ring();
+      interval = setInterval(ring, 2400);
+    },
+    stop() {
+      if (interval) { clearInterval(interval); interval = null; }
+      try { ctx.close(); } catch {}
+    },
+  };
+}
+
 function iceServers() {
   const servers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
   const turnUrl = import.meta.env.VITE_TURN_URL;
@@ -28,8 +73,10 @@ export function CallProvider({ children }) {
   const localRef = useRef(null);
   const peerRef = useRef(null);
   const bufferedIceRef = useRef([]);
+  const ringtoneRef = useRef(null);
 
   const cleanup = useCallback(() => {
+    if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
     if (localRef.current) {
       localRef.current.getTracks().forEach((t) => t.stop());
       localRef.current = null;
@@ -47,7 +94,16 @@ export function CallProvider({ children }) {
   }, []);
 
   const getMedia = useCallback(async (mediaType) => {
-    const constraints = { audio: true, video: mediaType === 'video' ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false };
+    const constraints = {
+      audio: true,
+      video: mediaType === 'video'
+        ? {
+            width: { min: 640, ideal: 1280, max: 1920 },
+            height: { min: 480, ideal: 720, max: 1080 },
+            frameRate: { min: 15, ideal: 30, max: 60 },
+          }
+        : false,
+    };
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
     localRef.current = stream;
     setLocalStream(stream);
@@ -80,6 +136,21 @@ export function CallProvider({ children }) {
     return pc;
   }
 
+  function setVideoBitrate(pc, bitrate) {
+    const transceivers = pc.getTransceivers();
+    for (const t of transceivers) {
+      if (t.sender && t.sender.track && t.sender.track.kind === 'video') {
+        const params = t.sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        params.encodings[0].maxBitrate = bitrate;
+        params.encodings[0].maxFramerate = 30;
+        t.sender.setParameters(params).catch(() => {});
+      }
+    }
+  }
+
   const startCall = useCallback(
     async (peerId, peerName, mediaType) => {
       setError('');
@@ -98,6 +169,7 @@ export function CallProvider({ children }) {
   );
 
   const acceptCall = useCallback(async () => {
+    if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
     setCall((c) => (c ? { ...c, state: 'active' } : c));
     try {
       await getMedia(call.mediaType);
@@ -110,6 +182,7 @@ export function CallProvider({ children }) {
   }, [call, emit, getMedia, cleanup]);
 
   const declineCall = useCallback(() => {
+    if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
     emit('webrtc:answer', { to: call.peerId, accept: false });
     cleanup();
   }, [call, emit, cleanup]);
@@ -126,11 +199,13 @@ export function CallProvider({ children }) {
       subscribe('call:incoming', ({ from, fromName, mediaType }) => {
         peerRef.current = String(from);
         setCall({ state: 'incoming', peerId: String(from), peerName: fromName, mediaType, muted: false, cameraOff: false, sharing: false });
+        if (!ringtoneRef.current) { ringtoneRef.current = createRingtone(); ringtoneRef.current.start(); }
       })
     );
 
     offs.push(
       subscribe('call:busy', () => {
+        if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
         setError('User is busy');
         setTimeout(cleanup, 1200);
       })
@@ -138,6 +213,7 @@ export function CallProvider({ children }) {
 
     offs.push(
       subscribe('call:answered', async ({ from, accept }) => {
+        if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
         if (!accept) {
           setError('Call declined');
           setTimeout(cleanup, 1000);
@@ -146,6 +222,7 @@ export function CallProvider({ children }) {
         setCall((c) => (c ? { ...c, state: 'active' } : c));
         const pc = buildPeerConnection(String(from));
         attachLocalTracks(pc);
+        if (call?.mediaType === 'video') setVideoBitrate(pc, 2500000);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         emit('webrtc:offer', { to: String(from), sdp: pc.localDescription.sdp });
@@ -156,6 +233,7 @@ export function CallProvider({ children }) {
       subscribe('call:offer', async ({ from, sdp }) => {
         const pc = buildPeerConnection(String(from));
         attachLocalTracks(pc);
+        if (call?.mediaType === 'video') setVideoBitrate(pc, 2500000);
         await pc.setRemoteDescription({ type: 'offer', sdp });
         drainIce(pc);
         const answer = await pc.createAnswer();
@@ -182,7 +260,10 @@ export function CallProvider({ children }) {
       })
     );
 
-    offs.push(subscribe('call:ended', () => cleanup()));
+    offs.push(subscribe('call:ended', () => {
+      if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
+      cleanup();
+    }));
 
     return () => offs.forEach((off) => off());
   }, [subscribe, emit, cleanup]);

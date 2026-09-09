@@ -4,6 +4,8 @@ const Notification = require('../models/Notification');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const { NOTIFICATION_TYPES } = require('../utils/constants');
+const mongoose = require('mongoose');
+const aiService = require('../services/ai.service');
 
 async function getChatForUser(chatId, userId) {
   const chat = await Chat.findById(chatId);
@@ -12,20 +14,44 @@ async function getChatForUser(chatId, userId) {
   return chat;
 }
 
+async function detectMessageUrgency(chatId, messageText, senderId) {
+  try {
+    const recentMessages = await Message.find({ chat: chatId, deletedAt: null })
+      .sort('-_id')
+      .limit(5)
+      .select('sender type ciphertext createdAt')
+      .lean();
+
+    if (recentMessages.length < 2) return { urgency: 'normal', confidence: 0.5, reason: '' };
+
+    const messagesForAnalysis = recentMessages.reverse().map((m) => ({
+      sender: String(m.sender) === String(senderId) ? 'Me' : 'Other',
+      text: m.type === 'text' ? messageText : `[${m.type}]`,
+    }));
+
+    const result = await aiService.detectUrgency(messagesForAnalysis);
+    return result;
+  } catch {
+    return { urgency: 'normal', confidence: 0.5, reason: '' };
+  }
+}
+
 const send = catchAsync(async (req, res) => {
   const chat = await getChatForUser(req.params.id, req.user._id);
 
-  const message = await Message.create({
+  const doc = {
     chat: chat._id,
     sender: req.user._id,
-    type: req.body.type,
-    iv: req.body.iv,
-    ciphertext: req.body.ciphertext,
+    type: req.body.type || 'text',
+    iv: req.body.iv || '',
+    ciphertext: req.body.ciphertext || '',
     file: req.body.fileId || null,
     replyTo: req.body.replyTo || null,
     deliveredTo: [req.user._id],
     readBy: [req.user._id],
-  });
+  };
+
+  const message = await Message.create(doc);
 
   chat.lastMessage = message._id;
   chat.lastActivity = new Date();
@@ -57,12 +83,15 @@ const send = catchAsync(async (req, res) => {
   }
 
   const recipientIds = chat.members.map((m) => String(m.user._id || m.user)).filter((id) => id !== String(req.user._id));
+  
   const notifications = recipientIds.map((uid) => ({
     user: uid,
     actor: req.user._id,
     type: NOTIFICATION_TYPES.MESSAGE,
     chat: chat._id,
     message: message._id,
+    urgency: 'normal',
+    urgencyReason: '',
   }));
   await Notification.insertMany(notifications, { ordered: false }).catch(() => {});
   if (io) {
@@ -99,6 +128,7 @@ const list = catchAsync(async (req, res) => {
         replyTo: m.replyTo ? String(m.replyTo) : null,
         deliveredTo: (m.deliveredTo || []).map(String),
         readBy: (m.readBy || []).map(String),
+        reactions: m.reactions || {},
         editedAt: m.editedAt,
         deletedAt: m.deletedAt,
         createdAt: m.createdAt,
@@ -175,7 +205,10 @@ const deleteMessage = catchAsync(async (req, res) => {
 });
 
 const editMessage = catchAsync(async (req, res) => {
-  const message = await Message.findById(req.params.mid);
+  const { mid } = req.params;
+  const { iv, ciphertext } = req.body;
+
+  const message = await Message.findById(mid);
   if (!message) throw ApiError.notFound('Message not found', 'message_not_found');
 
   const isSender = String(message.sender) === String(req.user._id);
@@ -183,8 +216,8 @@ const editMessage = catchAsync(async (req, res) => {
 
   if (message.deletedAt) throw ApiError.badRequest('Cannot edit a deleted message', 'message_deleted');
 
-  message.iv = req.body.iv;
-  message.ciphertext = req.body.ciphertext;
+  message.iv = iv;
+  message.ciphertext = ciphertext;
   message.editedAt = new Date();
   await message.save();
 
@@ -202,4 +235,73 @@ const editMessage = catchAsync(async (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { send, list, markRead, markDelivered, deleteMessage, editMessage };
+const addReaction = catchAsync(async (req, res) => {
+  const { mid } = req.params;
+  const { emoji } = req.body;
+
+  const message = await Message.findById(mid);
+  if (!message) throw ApiError.notFound('Message not found', 'message_not_found');
+  if (message.deletedAt) throw ApiError.badRequest('Cannot react to deleted message', 'message_deleted');
+
+  const reactions = message.reactions || new Map();
+  const users = reactions.get(emoji) || [];
+  const uid = String(req.user._id);
+
+  if (!users.map(String).includes(uid)) {
+    users.push(req.user._id);
+    reactions.set(emoji, users);
+    message.reactions = reactions;
+    await message.save();
+  }
+
+  const io = req.app.get('io');
+  if (io) {
+    io.to(`chat:${String(message.chat)}`).emit('message:reaction', {
+      chatId: String(message.chat),
+      messageId: String(message._id),
+      emoji,
+      userId: uid,
+      action: 'add',
+    });
+  }
+
+  res.json({ ok: true });
+});
+
+const removeReaction = catchAsync(async (req, res) => {
+  const { mid, emoji } = req.params;
+
+  const message = await Message.findById(mid);
+  if (!message) throw ApiError.notFound('Message not found', 'message_not_found');
+
+  const reactions = message.reactions || new Map();
+  const users = (reactions.get(emoji) || []).map(String);
+  const uid = String(req.user._id);
+  const idx = users.indexOf(uid);
+
+  if (idx !== -1) {
+    users.splice(idx, 1);
+    if (users.length === 0) {
+      reactions.delete(emoji);
+    } else {
+      reactions.set(emoji, users.map((id) => new mongoose.Types.ObjectId(id)));
+    }
+    message.reactions = reactions;
+    await message.save();
+  }
+
+  const io = req.app.get('io');
+  if (io) {
+    io.to(`chat:${String(message.chat)}`).emit('message:reaction', {
+      chatId: String(message.chat),
+      messageId: String(message._id),
+      emoji,
+      userId: uid,
+      action: 'remove',
+    });
+  }
+
+  res.json({ ok: true });
+});
+
+module.exports = { send, list, markRead, markDelivered, deleteMessage, editMessage, addReaction, removeReaction };

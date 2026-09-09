@@ -9,6 +9,8 @@ const notificationSchema = new mongoose.Schema(
     chat: { type: mongoose.Schema.Types.ObjectId, ref: 'Chat' },
     message: { type: mongoose.Schema.Types.ObjectId, ref: 'Message' },
     read: { type: Boolean, default: false, index: true },
+    urgency: { type: String, enum: ['critical', 'high', 'normal', 'low'], default: 'normal' },
+    urgencyReason: { type: String, default: '' },
     createdAt: { type: Date, default: Date.now },
   }
 );

@@ -24,8 +24,10 @@ router.get('/:id/messages', validate(v.listMessages), msgCtrl.list);
 router.post('/:id/messages', validate(v.sendMessage), msgCtrl.send);
 router.post('/:id/read', validate(v.chatIdParam), msgCtrl.markRead);
 router.post('/:id/delivered', validate(v.chatIdParam), msgCtrl.markDelivered);
-router.patch('/:id/messages/:mid', validate(v.editMessage), msgCtrl.editMessage);
 router.delete('/:id/messages/:mid', validate(v.messageIdParam), msgCtrl.deleteMessage);
+router.patch('/:id/messages/:mid', validate(v.editMessage), msgCtrl.editMessage);
+router.post('/:id/messages/:mid/reactions', validate(v.addReaction), msgCtrl.addReaction);
+router.delete('/:id/messages/:mid/reactions/:emoji', validate(v.removeReaction), msgCtrl.removeReaction);
 
 router.post(
   '/:id/files',

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import VoiceTranscription from './VoiceTranscription';
 import { filesApi } from '../../api';
 import { importRawChatKey, decryptBufferWithKey, decryptWithKey } from '../../crypto/e2ee';
 import { humanSize, duration as fmtDuration } from '../../utils/format';
@@ -20,8 +21,8 @@ async function loadFileUrl(file) {
 
   const blob = new Blob([plain], { type: file.mime || 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
-  urlCache.set(cacheKey, { url, name });
-  return { url, name };
+  urlCache.set(cacheKey, { url, name, blob });
+  return { url, name, blob };
 }
 
 export default function FileAttachment({ file, mine }) {
@@ -62,6 +63,7 @@ export default function FileAttachment({ file, mine }) {
         <div className="voice-note" data-mine={mine || undefined}>
           <audio controls src={state.url} preload="metadata" />
           <span className="voice-dur">{fmtDuration(file.duration)}</span>
+          <VoiceTranscription audioBlob={state.blob} audioUrl={state.url} />
         </div>
       )}
       {!isImage && !isVideo && !isAudio && (

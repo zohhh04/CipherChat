@@ -187,7 +187,7 @@
 | Containerization | Docker, Docker Compose |
 | Testing | Jest, Supertest |
 | CI/CD | GitHub Actions |
-
+ 
 ---
 
 ## Security Notes

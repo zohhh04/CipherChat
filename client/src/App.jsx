@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
+import { useTwemoji } from './hooks/useTwemoji';
 import AuthPage from './pages/AuthPage';
 import ChatPage from './pages/ChatPage';
 import SettingsPage from './pages/SettingsPage';
@@ -15,6 +16,8 @@ function Protected({ children, admin = false }) {
 }
 
 export default function App() {
+  useTwemoji();
+
   return (
     <>
       <Routes>

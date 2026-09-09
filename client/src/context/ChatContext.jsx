@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { useSocket } from './SocketContext';
-import { chatsApi, messagesApi, filesApi, usersApi } from '../api';
+import { chatsApi, messagesApi, filesApi, usersApi, aiApi } from '../api';
 import {
   generateChatKey,
   wrapChatKeyFor,
@@ -24,6 +24,7 @@ export function ChatProvider({ children }) {
   const [typingByChat, setTypingByChat] = useState({});
   const [loadingChats, setLoadingChats] = useState(true);
   const [unreadTotal, setUnreadTotal] = useState(0);
+  const [messageUrgency, setMessageUrgency] = useState({});
 
   const chatKeysRef = useRef(new Map());
   const pubKeysRef = useRef(new Map());
@@ -61,8 +62,11 @@ export function ChatProvider({ children }) {
       const wrap = chat.keyWraps && chat.keyWraps[String(user.id)];
       if (!wrap) throw new Error('No key wrap for this chat');
 
-      const wrapperPub = await getPublicKeyFor(wrap.by);
-      const key = await unwrapChatKey(wrap, wrapperPub, user.id, wrap.by);
+      const byUserId = (wrap.by && /^[a-f\d]{24}$/i.test(String(wrap.by))) ? wrap.by : (chat.createdBy ? String(chat.createdBy) : null);
+      if (!byUserId) throw new Error('No key wrap for this chat');
+
+      const wrapperPub = await getPublicKeyFor(byUserId);
+      const key = await unwrapChatKey(wrap, wrapperPub, user.id, byUserId);
       chatKeysRef.current.set(chatId, key);
       return key;
     },
@@ -84,6 +88,12 @@ export function ChatProvider({ children }) {
   const normalizeMessage = useCallback(
     async (chat, m) => {
       const content = m.deletedAt ? null : await decryptContent(chat, m.iv, m.ciphertext);
+      const reactions = {};
+      if (m.reactions && typeof m.reactions === 'object') {
+        for (const [emoji, users] of Object.entries(m.reactions)) {
+          reactions[emoji] = users.map(String);
+        }
+      }
       return {
         id: String(m.id),
         sender: String(m.sender),
@@ -93,6 +103,7 @@ export function ChatProvider({ children }) {
         createdAt: m.createdAt,
         deliveredTo: (m.deliveredTo || []).map(String),
         readBy: (m.readBy || []).map(String),
+        reactions,
         text: content && content.t === 'text' ? content.x : '',
         file:
           content && content.t === 'file'
@@ -168,7 +179,7 @@ export function ChatProvider({ children }) {
   );
 
   const sendText = useCallback(
-    async (chatId, text) => {
+    async (chatId, text, replyToId) => {
       const chat = chats[String(chatId)];
       if (!chat) throw new Error('Chat not loaded');
       const key = await ensureChatKey(chat);
@@ -177,6 +188,7 @@ export function ChatProvider({ children }) {
         type: 'text',
         iv: payload.iv,
         ciphertext: payload.ciphertext,
+        ...(replyToId ? { replyTo: replyToId } : {}),
       });
       const normalized = await normalizeMessage(chat, { ...message, sender: user.id, deliveredTo: [user.id], readBy: [user.id] });
       setMessagesByChat((prev) => ({ ...prev, [String(chatId)]: [...(prev[String(chatId)] || []), normalized] }));
@@ -246,21 +258,16 @@ export function ChatProvider({ children }) {
   }, []);
 
   const editMessage = useCallback(
-    async (chatId, messageId, newText) => {
+    async (chatId, messageId, plaintext) => {
       const chat = chats[String(chatId)];
       if (!chat) throw new Error('Chat not loaded');
       const key = await ensureChatKey(chat);
-      const payload = await encryptWithKey(key, JSON.stringify({ t: 'text', x: newText }));
-      await messagesApi.edit(chatId, messageId, {
-        iv: payload.iv,
-        ciphertext: payload.ciphertext,
-      });
+      const payload = await encryptWithKey(key, JSON.stringify({ t: 'text', x: plaintext }));
+      await messagesApi.edit(chatId, messageId, { iv: payload.iv, ciphertext: payload.ciphertext });
       setMessagesByChat((prev) => ({
         ...prev,
         [String(chatId)]: (prev[String(chatId)] || []).map((m) =>
-          m.id === String(messageId)
-            ? { ...m, text: newText, editedAt: new Date().toISOString() }
-            : m
+          m.id === String(messageId) ? { ...m, text: plaintext, editedAt: new Date().toISOString() } : m
         ),
       }));
     },
@@ -536,8 +543,7 @@ export function ChatProvider({ children }) {
       subscribe('message:edited', ({ chatId, messageId, iv, ciphertext, editedAt }) => {
         (async () => {
           const cid = String(chatId);
-          let chat = chatsRef.current[cid];
-          if (!chat) chat = (await refreshChats())[cid];
+          const chat = chatsRef.current[cid];
           if (!chat) return;
           const content = await decryptContent(chat, iv, ciphertext);
           if (!content) return;
@@ -550,6 +556,29 @@ export function ChatProvider({ children }) {
             ),
           }));
         })();
+      })
+    );
+
+    offs.push(
+      subscribe('message:reaction', ({ chatId, messageId, emoji, userId, action }) => {
+        const cid = String(chatId);
+        setMessagesByChat((prev) => ({
+          ...prev,
+          [cid]: (prev[cid] || []).map((m) => {
+            if (m.id !== String(messageId)) return m;
+            const reactions = { ...m.reactions };
+            if (action === 'add') {
+              const users = reactions[emoji] ? [...reactions[emoji]] : [];
+              if (!users.includes(userId)) users.push(userId);
+              reactions[emoji] = users;
+            } else {
+              const users = (reactions[emoji] || []).filter((id) => id !== userId);
+              if (users.length === 0) delete reactions[emoji];
+              else reactions[emoji] = users;
+            }
+            return { ...m, reactions };
+          }),
+        }));
       })
     );
 
@@ -593,7 +622,7 @@ export function ChatProvider({ children }) {
     );
 
     return () => offs.forEach((off) => off());
-  }, [user, identityReady, subscribe, refreshChats, normalizeMessage, loadMessages]);
+  }, [user, identityReady, subscribe, refreshChats, normalizeMessage, loadMessages, decryptContent]);
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -614,6 +643,86 @@ export function ChatProvider({ children }) {
     return () => clearInterval(t);
   }, []);
 
+  const searchMessages = useCallback(
+    (query) => {
+      if (!query.trim()) return [];
+      const q = query.toLowerCase();
+      const results = [];
+      for (const [chatId, msgs] of Object.entries(messagesByChat)) {
+        for (const m of msgs) {
+          if (!m.deletedAt && m.text && m.text.toLowerCase().includes(q)) {
+            results.push({ ...m, chatId });
+          }
+        }
+      }
+      return results.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 50);
+    },
+    [messagesByChat]
+  );
+
+  const addReaction = useCallback(
+    async (chatId, messageId, emoji) => {
+      await messagesApi.addReaction(chatId, messageId, emoji);
+      setMessagesByChat((prev) => ({
+        ...prev,
+        [String(chatId)]: (prev[String(chatId)] || []).map((m) => {
+          if (m.id !== String(messageId)) return m;
+          const reactions = { ...m.reactions };
+          const users = reactions[emoji] ? [...reactions[emoji]] : [];
+          if (!users.includes(user.id)) users.push(user.id);
+          reactions[emoji] = users;
+          return { ...m, reactions };
+        }),
+      }));
+    },
+    [user]
+  );
+
+  const removeReaction = useCallback(
+    async (chatId, messageId, emoji) => {
+      await messagesApi.removeReaction(chatId, messageId, emoji);
+      setMessagesByChat((prev) => ({
+        ...prev,
+        [String(chatId)]: (prev[String(chatId)] || []).map((m) => {
+          if (m.id !== String(messageId)) return m;
+          const reactions = { ...m.reactions };
+          const users = (reactions[emoji] || []).filter((id) => id !== user.id);
+          if (users.length === 0) delete reactions[emoji];
+          else reactions[emoji] = users;
+          return { ...m, reactions };
+        }),
+      }));
+    },
+    [user]
+  );
+
+  const detectMessageUrgency = useCallback(
+    async (chatId, messageText) => {
+      try {
+        const msgs = messagesByChat[String(chatId)] || [];
+        const recentMessages = msgs.slice(-5).map((m) => ({
+          sender: m.sender === user.id ? 'Me' : 'Other',
+          text: m.text || '',
+        }));
+        recentMessages.push({ sender: 'Other', text: messageText });
+
+        const result = await aiApi.detectUrgency(recentMessages);
+        setMessageUrgency((prev) => ({
+          ...prev,
+          [String(chatId)]: {
+            urgency: result.urgency,
+            confidence: result.confidence,
+            reason: result.reason,
+          },
+        }));
+        return result;
+      } catch {
+        return { urgency: 'normal', confidence: 0.5, reason: '' };
+      }
+    },
+    [messagesByChat, user]
+  );
+
   const value = useMemo(
     () => ({
       chats,
@@ -622,6 +731,7 @@ export function ChatProvider({ children }) {
       typingByChat,
       loadingChats,
       unreadTotal,
+      messageUrgency,
       onlineIds: null,
       openChat,
       sendText,
@@ -639,11 +749,15 @@ export function ChatProvider({ children }) {
       refreshChats,
       loadMessages,
       getPublicKeyFor,
+      searchMessages,
+      addReaction,
+      removeReaction,
+      detectMessageUrgency,
     }),
     [
-      chats, activeChatId, messagesByChat, typingByChat, loadingChats, unreadTotal,
+      chats, activeChatId, messagesByChat, typingByChat, loadingChats, unreadTotal, messageUrgency,
       openChat, sendText, sendFile, deleteMessage, editMessage, createDirect, createGroup,
-      addMember, removeMemberAndRotate, leaveChat, rotateGroupKeyManually, notifyTyping, decryptPreview, refreshChats, loadMessages, getPublicKeyFor,
+      addMember, removeMemberAndRotate, leaveChat, rotateGroupKeyManually, notifyTyping, decryptPreview, refreshChats, loadMessages, getPublicKeyFor, searchMessages, addReaction, removeReaction, detectMessageUrgency,
     ]
   );
 

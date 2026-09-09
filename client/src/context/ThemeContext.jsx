@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 const ThemeContext = createContext(null);
 const STORAGE_KEY = 'sc_theme';
@@ -11,15 +11,26 @@ function initialTheme() {
 
 export function ThemeProvider({ children }) {
   const [theme, setTheme] = useState(initialTheme);
+  const [syncCallback, setSyncCallback] = useState(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem(STORAGE_KEY, theme);
-  }, [theme]);
+    if (syncCallback) syncCallback(theme);
+  }, [theme, syncCallback]);
+
+  const registerSync = useCallback((cb) => {
+    setSyncCallback(() => cb);
+  }, []);
 
   const value = useMemo(
-    () => ({ theme, toggle: () => setTheme((t) => (t === 'dark' ? 'light' : 'dark')) }),
-    [theme]
+    () => ({
+      theme,
+      toggle: () => setTheme((t) => (t === 'dark' ? 'light' : 'dark')),
+      setTheme,
+      registerSync,
+    }),
+    [theme, registerSync]
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

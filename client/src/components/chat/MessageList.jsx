@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
 import MessageBubble from './MessageBubble';
+import { Twemoji } from '../common/EmojiText';
 import { dayLabel } from '../../utils/format';
 
-export default function MessageList({ messages, chat, myId, typingNames }) {
+export default function MessageList({ messages, chat, myId, typingNames, onEditMessage, onDeleteMessage, onReplyMessage, onAddReaction, onRemoveReaction }) {
   const endRef = useRef(null);
 
   useEffect(() => {
@@ -13,15 +14,16 @@ export default function MessageList({ messages, chat, myId, typingNames }) {
 
   return (
     <div className="message-list">
-      <div className="e2ee-note">🔒 Messages are end-to-end encrypted. Only people in this chat can read them.</div>
+      <div className="e2ee-note"><Twemoji>🔒</Twemoji> Messages are end-to-end encrypted. Only people in this chat can read them.</div>
       {messages.map((m) => {
         const day = dayLabel(m.createdAt);
         const showDay = day !== lastDay;
         lastDay = day;
+        const replyToMsg = m.replyTo ? messages.find((msg) => msg.id === m.replyTo) : null;
         return (
           <div key={m.id}>
             {showDay && <div className="day-divider">{day}</div>}
-            <MessageBubble message={m} chat={chat} myId={myId} />
+            <MessageBubble message={m} chat={chat} myId={myId} onEdit={onEditMessage} onDelete={onDeleteMessage} onReply={onReplyMessage} onAddReaction={onAddReaction} onRemoveReaction={onRemoveReaction} replyToMessage={replyToMsg} />
           </div>
         );
       })}

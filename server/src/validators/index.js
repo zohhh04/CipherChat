@@ -122,6 +122,15 @@ const messageIdParam = {
   params: z.object({ id: objectId, mid: objectId }),
 };
 
+const uploadFile = {
+  params: z.object({ id: objectId }),
+  body: z.object({ nameIv: b64(40), nameCt: b64(5000), mimeHint: z.string().max(100).default('') }),
+};
+
+const deleteAccount = {
+  body: z.object({ password: z.string().min(1) }),
+};
+
 const editMessage = {
   params: z.object({ id: objectId, mid: objectId }),
   body: z.object({
@@ -130,14 +139,27 @@ const editMessage = {
   }).strict(),
 };
 
-const uploadFile = {
-  params: z.object({ id: objectId }),
-  body: z.object({ nameIv: b64(40), nameCt: b64(5000), mimeHint: z.string().max(100).default('') }),
+const addReaction = {
+  params: z.object({ id: objectId, mid: objectId }),
+  body: z.object({
+    emoji: z.string().min(1).max(8),
+  }).strict(),
+};
+
+const removeReaction = {
+  params: z.object({ id: objectId, mid: objectId, emoji: z.string().min(1).max(8) }),
+};
+
+const translateText = {
+  body: z.object({
+    text: z.string().min(1).max(5000),
+    targetLang: z.string().min(2).max(5).default('en'),
+  }).strict(),
 };
 
 module.exports = {
   register, login, verifyEmail, forgotPassword, resetPassword,
-  updateMe, changePassword, saveKeys, searchUsers,
+  updateMe, changePassword, saveKeys, searchUsers, deleteAccount,
   createDirectChat, createGroupChat, chatIdParam, updateGroup, addMembers, removeMember, rotateKeys,
-  sendMessage, listMessages, messageIdParam, editMessage, uploadFile,
+  sendMessage, listMessages, messageIdParam, uploadFile, editMessage, addReaction, removeReaction, translateText,
 };
