@@ -5,16 +5,26 @@ import { toast } from '../common/Toast';
 
 const EMOJIS = ['😀', '😂', '🥲', '😍', '👍', '🙏', '🔥', '🎉', '❤️', '😢', '😮', '🤔'];
 
+function getSupportedMimeType() {
+  const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+  for (const t of types) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
 export default function MessageInput({ chatId, editingMessage, onEditSubmit, onEditCancel, replyTo, onReplyCancel }) {
   const { sendText, sendFile, notifyTyping } = useChat();
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
   const [progress, setProgress] = useState(null);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const startedAtRef = useRef(0);
+  const timerRef = useRef(null);
 
   useEffect(() => {
     setText('');
@@ -22,6 +32,15 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
       setText(editingMessage.text || '');
     }
   }, [chatId, editingMessage]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+        recorderRef.current.stop();
+      }
+    };
+  }, []);
 
   const handleSendText = async () => {
     const trimmed = text.trim();
@@ -65,35 +84,69 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
   };
 
   const startRecording = async () => {
+    if (typeof MediaRecorder === 'undefined') {
+      toast('Voice recording is not supported in this browser', 'error');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      const mimeType = getSupportedMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       chunksRef.current = [];
+
       recorder.ondataavailable = (ev) => {
-        if (ev.data.size > 0) chunksRef.current.push(ev.data);
+        if (ev.data && ev.data.size > 0) chunksRef.current.push(ev.data);
       };
+
+      recorder.onerror = () => {
+        toast('Recording error occurred', 'error');
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        if (timerRef.current) clearInterval(timerRef.current);
+      };
+
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const seconds = (Date.now() - startedAtRef.current) / 1000;
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        if (blob.size > 800) {
-          const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
-          setBusy(true);
-          try {
-            await sendFile(chatId, file, 'audio', Math.round(seconds));
-          } catch (err) {
-            toast(err.message || 'Voice note failed', 'error');
-          } finally {
-            setBusy(false);
-          }
+        if (timerRef.current) clearInterval(timerRef.current);
+        const seconds = Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000));
+        const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' });
+
+        if (blob.size < 500) {
+          toast('Recording too short', 'error');
+          setRecording(false);
+          return;
+        }
+
+        const ext = (mimeType || 'audio/webm').split('/')[1].split(';')[0];
+        const file = new File([blob], `voice-${Date.now()}.${ext}`, { type: mimeType || 'audio/webm' });
+        setRecording(false);
+        setBusy(true);
+        try {
+          await sendFile(chatId, file, 'audio', seconds);
+          toast('Voice note sent', 'success');
+        } catch (err) {
+          toast(err.message || 'Failed to send voice note', 'error');
+        } finally {
+          setBusy(false);
         }
       };
-      recorder.start();
+
+      recorder.start(1000);
       startedAtRef.current = Date.now();
       recorderRef.current = recorder;
       setRecording(true);
-    } catch {
-      toast('Microphone access denied', 'error');
+      setRecordingTime(0);
+      timerRef.current = setInterval(() => {
+        setRecordingTime(Math.floor((Date.now() - startedAtRef.current) / 1000));
+      }, 1000);
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        toast('Microphone permission denied. Please allow microphone access.', 'error');
+      } else if (err.name === 'NotFoundError') {
+        toast('No microphone found on this device', 'error');
+      } else {
+        toast('Could not start recording: ' + (err.message || 'Unknown error'), 'error');
+      }
     }
   };
 
@@ -102,7 +155,25 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
       recorderRef.current.stop();
     }
     recorderRef.current = null;
+  };
+
+  const cancelRecording = () => {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      recorderRef.current.onstop = null;
+      recorderRef.current.stop();
+      recorderRef.current.stream.getTracks().forEach((t) => t.stop());
+    }
+    recorderRef.current = null;
+    if (timerRef.current) clearInterval(timerRef.current);
+    chunksRef.current = [];
     setRecording(false);
+    setRecordingTime(0);
+  };
+
+  const formatTime = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
   };
 
   return (
@@ -125,8 +196,12 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
       {recording ? (
         <div className="record-bar">
           <span className="rec-dot" />
-          <span>Recording… tap send to stop</span>
-          <button type="button" className="send-btn" onClick={stopRecording} disabled={busy}>
+          <span className="rec-time">{formatTime(recordingTime)}</span>
+          <span className="rec-label">Recording…</span>
+          <button type="button" className="icon-btn rec-cancel" onClick={cancelRecording} title="Cancel recording">
+            <Twemoji>✕</Twemoji>
+          </button>
+          <button type="button" className="send-btn" onClick={stopRecording} disabled={busy} title="Send voice note">
             ➤
           </button>
         </div>

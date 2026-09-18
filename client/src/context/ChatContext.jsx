@@ -10,6 +10,7 @@ import {
   decryptWithKey,
   exportRawKeyB64,
   importRawChatKey,
+  fromB64,
 } from '../crypto/e2ee';
 
 const ChatContext = createContext(null);
@@ -206,33 +207,34 @@ export function ChatProvider({ children }) {
       const fileKey = await generateChatKey();
       const rawKey = await exportRawKeyB64(fileKey);
 
-      const plainBytes = new Uint8Array(await file.arrayBuffer());
+      const arrayBuf = await file.arrayBuffer();
+      const plainBytes = new Uint8Array(arrayBuf);
       const payload = await encryptWithKey(fileKey, plainBytes);
       const namePayload = await encryptWithKey(fileKey, file.name || 'attachment');
 
+      const encryptedBytes = fromB64(payload.ciphertext);
       const fileId = await filesApi.upload(
         chatId,
-        base64ToBytes(payload.ciphertext),
+        encryptedBytes.buffer,
         namePayload.iv,
         namePayload.ciphertext,
-        kind === 'audio' ? 'audio/webm' : file.type || '',
+        kind === 'audio' ? (file.type || 'audio/webm') : (file.type || ''),
         onProgress
       );
 
       const msgKey = await ensureChatKey(chat);
-      const content = await encryptWithKey(
-        msgKey,
-        JSON.stringify({
-          t: 'file',
-          f: String(fileId),
-          k: rawKey,
-          v: payload.iv,
-          n: file.name || 'attachment',
-          m: kind === 'audio' ? 'audio/webm' : file.type || 'application/octet-stream',
-          s: file.size,
-          d: durationSec || undefined,
-        })
-      );
+      const meta = {
+        t: 'file',
+        f: String(fileId),
+        k: rawKey,
+        v: payload.iv,
+        n: file.name || 'attachment',
+        m: kind === 'audio' ? (file.type || 'audio/webm') : (file.type || 'application/octet-stream'),
+        s: file.size,
+      };
+      if (durationSec) meta.d = durationSec;
+
+      const content = await encryptWithKey(msgKey, JSON.stringify(meta));
 
       const message = await messagesApi.send(chatId, {
         type: kind,
@@ -496,6 +498,9 @@ export function ChatProvider({ children }) {
                     : m
                 ),
               }));
+            }
+            if (normalized.text && normalized.text.trim().length > 0) {
+              detectMessageUrgency(cid, normalized.text).catch(() => {});
             }
           }
         })();

@@ -10,14 +10,44 @@ async function loadFileUrl(file) {
   const cacheKey = `${file.fileId}:${file.key}`;
   if (urlCache.has(cacheKey)) return urlCache.get(cacheKey);
 
-  const key = await importRawChatKey(file.key);
-  const [buffer, meta] = await Promise.all([
-    filesApi.download(file.fileId),
-    filesApi.meta(file.fileId),
-  ]);
+  if (!file.key || !file.iv) {
+    throw new Error('File decryption key is missing from message');
+  }
 
-  const plain = await decryptBufferWithKey(key, file.iv, buffer);
-  const name = await decryptWithKey(key, { iv: meta.nameIv, ciphertext: meta.nameCt });
+  let key;
+  try {
+    key = await importRawChatKey(file.key);
+  } catch (e) {
+    throw new Error('Invalid file encryption key');
+  }
+
+  let buffer, meta;
+  try {
+    [buffer, meta] = await Promise.all([
+      filesApi.download(file.fileId),
+      filesApi.meta(file.fileId),
+    ]);
+  } catch (e) {
+    throw new Error('Failed to download file from server');
+  }
+
+  if (!buffer || buffer.byteLength === 0) {
+    throw new Error('Downloaded file is empty');
+  }
+
+  let plain;
+  try {
+    plain = await decryptBufferWithKey(key, file.iv, buffer);
+  } catch (e) {
+    throw new Error('Decryption failed — file key does not match');
+  }
+
+  let name;
+  try {
+    name = await decryptWithKey(key, { iv: meta.nameIv, ciphertext: meta.nameCt });
+  } catch {
+    name = file.name || 'attachment';
+  }
 
   const blob = new Blob([plain], { type: file.mime || 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
@@ -34,8 +64,8 @@ export default function FileAttachment({ file, mine }) {
       .then((r) => {
         if (alive) setState({ loading: false, ...r });
       })
-      .catch(() => {
-        if (alive) setState({ loading: false, error: 'Failed to decrypt attachment' });
+      .catch((err) => {
+        if (alive) setState({ loading: false, error: err.message || 'Failed to decrypt attachment' });
       });
     return () => {
       alive = false;
@@ -43,7 +73,14 @@ export default function FileAttachment({ file, mine }) {
   }, [file]);
 
   if (state.loading) return <div className="attachment loading">Decrypting…</div>;
-  if (state.error) return <div className="attachment error">{state.error}</div>;
+  if (state.error) {
+    return (
+      <div className="attachment error">
+        <span className="attach-error-icon">🔒</span>
+        <span className="attach-error-text">{state.error}</span>
+      </div>
+    );
+  }
 
   const mime = file.mime || '';
   const isImage = mime.startsWith('image/');

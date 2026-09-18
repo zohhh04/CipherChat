@@ -84,18 +84,30 @@ const send = catchAsync(async (req, res) => {
 
   const recipientIds = chat.members.map((m) => String(m.user._id || m.user)).filter((id) => id !== String(req.user._id));
   
+  let urgencyResult = { urgency: 'normal', confidence: 0.5, reason: '' };
+  if (req.body.type === 'text' && recipientIds.length > 0) {
+    urgencyResult = await detectMessageUrgency(chat._id, req.body.ciphertext, req.user._id);
+  }
+
   const notifications = recipientIds.map((uid) => ({
     user: uid,
     actor: req.user._id,
     type: NOTIFICATION_TYPES.MESSAGE,
     chat: chat._id,
     message: message._id,
-    urgency: 'normal',
-    urgencyReason: '',
+    urgency: urgencyResult.urgency,
+    urgencyReason: urgencyResult.reason,
   }));
   await Notification.insertMany(notifications, { ordered: false }).catch(() => {});
   if (io) {
-    for (const uid of recipientIds) io.to(`user:${uid}`).emit('notification:new', { chatId: String(chat._id), messageId: String(message._id) });
+    for (const uid of recipientIds) {
+      io.to(`user:${uid}`).emit('notification:new', {
+        chatId: String(chat._id),
+        messageId: String(message._id),
+        urgency: urgencyResult.urgency,
+        urgencyReason: urgencyResult.reason,
+      });
+    }
   }
 
   res.status(201).json({ ok: true, data: { message: payload.message } });

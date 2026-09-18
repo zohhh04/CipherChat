@@ -12,7 +12,6 @@ import GroupInfoModal from './GroupInfoModal';
 import NewChatModal from './NewChatModal';
 import NewGroupModal from './NewGroupModal';
 import SummaryPanel from './SummaryModal';
-import SmartReplies from './SmartReplies';
 import { useCall } from '../../context/CallContext';
 
 export default function ChatWindow() {
@@ -146,17 +145,6 @@ export default function ChatWindow() {
               }}
             />
             <MessageList messages={messages} chat={chat} myId={user.id} typingNames={typingNames} onEditMessage={handleEdit} onDeleteMessage={handleDelete} onReplyMessage={handleReply} onAddReaction={handleAddReaction} onRemoveReaction={handleRemoveReaction} />
-            {activeChatId && (
-              <SmartReplies
-                chatId={activeChatId}
-                messages={messages}
-                myId={user.id}
-                onSelect={(reply) => {
-                  const input = document.querySelector('.message-input textarea');
-                  if (input) { input.value = reply; input.dispatchEvent(new Event('input', { bubbles: true })); }
-                }}
-              />
-            )}
             <MessageInput
               chatId={activeChatId}
               editingMessage={editingMessage}
