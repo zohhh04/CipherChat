@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { authApi, apiError } from '../api';
 import { useAuth } from '../context/AuthContext';
@@ -19,6 +19,9 @@ export default function AuthPage({ mode }) {
   const [devToken, setDevToken] = useState('');
   const [resendEmail, setResendEmail] = useState('');
   const [resending, setResending] = useState(false);
+  const verifyOnceRef = useRef(false);
+
+  const goLogin = () => navigate('/login', { replace: true });
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -29,14 +32,36 @@ export default function AuthPage({ mode }) {
       setInfo('Missing verification token');
       return;
     }
+    // Guard: tokens are single-use and effects can fire twice in dev —
+    // without this the second call burns with "Invalid or expired token".
+    if (verifyOnceRef.current) return;
+    verifyOnceRef.current = true;
+    let timer;
+    const goLoginSoon = () => {
+      timer = setTimeout(() => navigate('/login', { replace: true }), 2000);
+    };
     authApi
       .verifyEmail(token)
       .then(() => {
-        setInfo('Email verified! You can sign in now.');
+        setInfo('Email verified! Taking you to sign in…');
         setDone(true);
+        toast('Email verified! Please sign in.', 'success');
+        goLoginSoon();
       })
-      .catch((err) => setInfo(apiError(err).message));
-  }, [mode, params]);
+      .catch((err) => {
+        const e = apiError(err);
+        if (e.code === 'token_invalid') {
+          setInfo('This link was already used or expired — your email may already be verified. Taking you to sign in…');
+          setDone(true);
+          goLoginSoon();
+        } else {
+          setInfo(e.message);
+        }
+      });
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [mode, params, navigate]);
 
   const resendLink = async () => {
     const target = resendEmail || form.email;
@@ -105,6 +130,10 @@ export default function AuthPage({ mode }) {
         }
       } else if (mode === 'reset') {
         const token = params.get('token');
+        if (!token) {
+          setError('Missing reset token. Please open the link from your email again.');
+          return;
+        }
         if (form.password !== form.confirm) {
           setError('Passwords do not match');
           return;
@@ -171,9 +200,9 @@ export default function AuthPage({ mode }) {
         )}
 
         {(mode === 'verify-email' || done) && (
-          <Link className="btn primary block" to="/login">
+          <button type="button" className="btn primary block" onClick={goLogin}>
             Go to sign in
-          </Link>
+          </button>
         )}
 
         {!done && mode !== 'verify-email' && (

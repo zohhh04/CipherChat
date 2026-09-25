@@ -117,11 +117,21 @@ const sendMessage = {
     // 🔐 encrypted payload (iv may be packed "salt.iv" for shared-key messages)
     iv: packedIv.optional().default(''),
     ciphertext: b64(500000).optional().default(''),
-    type: z.enum(['text', 'image', 'video', 'audio', 'file', 'system']).default('text'),
+    type: z.enum(['text', 'image', 'video', 'audio', 'file', 'system', 'call', 'poll']).default('text'),
     fileId: objectId.optional(),
     replyTo: objectId.optional(),
     // One-time view: images only. Sender opts in; server enforces image-only.
     viewOnce: z.boolean().optional().default(false),
+    // Forward marker — client re-sends content into the target chat with this set.
+    forwarded: z.boolean().optional().default(false),
+    // Poll creation via send: { question, options }
+    poll: z.object({
+      question: z.string().trim().min(1).max(300),
+      options: z.array(z.string().trim().min(1).max(120)).min(2).max(10),
+    }).optional(),
+    // Missed-call meta for type 'call'
+    callKind: z.enum(['audio', 'video']).optional(),
+    callStatus: z.enum(['missed', 'ended', 'declined']).optional(),
   })
     .strict()
     .refine((b) => !(b.type !== 'text' && !b.fileId), { message: 'fileId required for media messages' })
@@ -181,6 +191,35 @@ const removeReaction = {
   params: z.object({ id: objectId, mid: objectId, emoji: z.string().min(1).max(8) }),
 };
 
+const createPoll = {
+  params: z.object({ id: objectId }),
+  body: z.object({
+    question: z.string().trim().min(1).max(300),
+    options: z.array(z.string().trim().min(1).max(120)).min(2).max(10),
+  }).strict(),
+};
+
+const votePoll = {
+  params: z.object({ id: objectId, mid: objectId }),
+  body: z.object({
+    optionIndex: z.number().int().min(0).max(9),
+  }).strict(),
+};
+
+const pinMessage = {
+  params: z.object({ id: objectId }),
+  body: z.object({
+    messageId: objectId,
+  }).strict(),
+};
+
+const logMissedCall = {
+  params: z.object({ id: objectId }),
+  body: z.object({
+    mediaType: z.enum(['audio', 'video']).default('audio'),
+  }).strict(),
+};
+
 const translateText = {
   body: z.object({
     text: z.string().min(1).max(5000),
@@ -193,4 +232,5 @@ module.exports = {
   updateMe, changePassword, saveKeys, searchUsers, deleteAccount,
   createDirectChat, createGroupChat, chatIdParam, updateGroup, addMembers, removeMember, rotateKeys,
   sendMessage, listMessages, messageIdParam, uploadFile, editMessage, addReaction, removeReaction, translateText,
+  createPoll, votePoll, pinMessage, logMissedCall,
 };

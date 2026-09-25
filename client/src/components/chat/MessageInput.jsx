@@ -16,7 +16,7 @@ function getSupportedMimeType() {
   return '';
 }
 
-export default function MessageInput({ chatId, editingMessage, onEditSubmit, onEditCancel, replyTo, onReplyCancel, chatMode = 'normal' }) {
+export default function MessageInput({ chatId, editingMessage, onEditSubmit, onEditCancel, replyTo, onReplyCancel, chatMode = 'normal', onOpenPoll }) {
   const { sendText, sendFile, notifyTyping } = useChat();
   const { user } = useAuth();
   const secure = chatMode === 'encrypted';
@@ -31,6 +31,7 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
   const [keyDraft, setKeyDraft] = useState('');
   const hasSecureKey = Boolean(user && getSecureKey(user.id));
   const recorderRef = useRef(null);
+  const streamRef = useRef(null);
   const chunksRef = useRef([]);
   const startedAtRef = useRef(0);
   const timerRef = useRef(null);
@@ -138,13 +139,15 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
 
       recorder.onerror = () => {
         toast('Recording error occurred', 'error');
-        stream.getTracks().forEach((t) => t.stop());
+        try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+        streamRef.current = null;
         setRecording(false);
         if (timerRef.current) clearInterval(timerRef.current);
       };
 
       recorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
+        try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+        streamRef.current = null;
         if (timerRef.current) clearInterval(timerRef.current);
         const seconds = Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000));
         const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' });
@@ -173,6 +176,7 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
       recorder.start(1000);
       startedAtRef.current = Date.now();
       recorderRef.current = recorder;
+      streamRef.current = stream;
       setRecording(true);
       setRecordingTime(0);
       timerRef.current = setInterval(() => {
@@ -193,14 +197,18 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
       recorderRef.current.stop();
     }
+    // stream tracks are stopped in onstop handler; clear refs here only
     recorderRef.current = null;
   };
 
   const cancelRecording = () => {
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
       recorderRef.current.onstop = null;
-      recorderRef.current.stop();
-      recorderRef.current.stream.getTracks().forEach((t) => t.stop());
+      try { recorderRef.current.stop(); } catch { /* ignore */ }
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => { try { t.stop(); } catch { /* ignore */ } });
+      streamRef.current = null;
     }
     recorderRef.current = null;
     if (timerRef.current) clearInterval(timerRef.current);
@@ -296,6 +304,15 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
           )}
           <button type="button" className="icon-btn" title="Emoji" onClick={() => setShowEmoji((s) => !s)}>
             <Twemoji>😊</Twemoji>
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title="Create a poll (great for groups)"
+            onClick={() => onOpenPoll && onOpenPoll()}
+            disabled={busy}
+          >
+            <Twemoji>📊</Twemoji>
           </button>
           <button
             type="button"

@@ -47,30 +47,60 @@ async function detectMessageUrgency(chatId, messageText, senderId) {
 const send = catchAsync(async (req, res) => {
   const chat = await getChatForUser(req.params.id, req.user._id);
 
+  const reqType = req.body.type || 'text';
   // One-time view is images-only. Silently coerce non-image types to false
   // so a crafted request can't make videos/docs view-once.
-  const viewOnce = req.body.viewOnce === true && (req.body.type || 'text') === 'image';
+  const viewOnce = req.body.viewOnce === true && reqType === 'image';
 
   // 🟢 normal → store plaintext, never ciphertext | 🔐 encrypted → store ciphertext+iv, never plaintext
-  const mode = req.body.mode === 'normal' ? 'normal' : 'encrypted';
+  // Polls + calls + system notices are always plaintext (normal) so every
+  // member can read/vote without shared keys.
+  let mode = req.body.mode === 'normal' ? 'normal' : 'encrypted';
+  if (['poll', 'call', 'system'].includes(reqType)) mode = 'normal';
   const plainInput = String(req.body.text ?? req.body.message ?? '');
+  const forwarded = req.body.forwarded === true;
+
+  // Poll via generic send: { type:'poll', poll:{question, options} }
+  let pollDoc = undefined;
+  if (reqType === 'poll') {
+    const q = String(req.body.poll?.question ?? plainInput).trim().slice(0, 300);
+    const opts = Array.isArray(req.body.poll?.options) ? req.body.poll.options.map((o) => String(o).trim().slice(0, 120)).filter(Boolean) : [];
+    if (!q || opts.length < 2 || opts.length > 10) {
+      throw ApiError.badRequest('poll.question and 2-10 poll.options are required', 'poll_required');
+    }
+    pollDoc = { question: q, options: opts, votes: opts.map(() => []) };
+  }
+
+  // Call pseudo-message via generic send: { type:'call', callKind, callStatus }
+  let callKind = '';
+  let callStatus = '';
+  let callText = plainInput;
+  if (reqType === 'call') {
+    callKind = req.body.callKind === 'video' ? 'video' : 'audio';
+    callStatus = ['missed', 'ended', 'declined'].includes(req.body.callStatus) ? req.body.callStatus : 'missed';
+    if (!callText.trim()) callText = formatMissedCallText(callKind, new Date());
+  }
 
   let doc;
   if (mode === 'normal') {
-    if ((req.body.type || 'text') === 'text' && !plainInput.trim()) {
+    if (reqType === 'text' && !plainInput.trim() && !pollDoc && !callText.trim()) {
       throw ApiError.badRequest('text/message is required for normal messages', 'text_required');
     }
     doc = {
       chat: chat._id,
       sender: req.user._id,
-      type: req.body.type || 'text',
+      type: reqType,
       mode: 'normal',
-      text: plainInput.slice(0, 10000),
+      text: reqType === 'poll' ? (pollDoc.question || '').slice(0, 10000) : reqType === 'call' ? callText.slice(0, 500) : plainInput.slice(0, 10000),
       iv: '',
       ciphertext: '',
       file: req.body.fileId || null,
       replyTo: req.body.replyTo || null,
       viewOnce,
+      forwarded,
+      callKind,
+      callStatus,
+      ...(pollDoc ? { poll: pollDoc } : {}),
       deliveredTo: [req.user._id],
       readBy: [req.user._id],
     };
@@ -78,7 +108,7 @@ const send = catchAsync(async (req, res) => {
     doc = {
       chat: chat._id,
       sender: req.user._id,
-      type: req.body.type || 'text',
+      type: reqType,
       mode: 'encrypted',
       text: '',
       iv: req.body.iv || '',
@@ -86,6 +116,7 @@ const send = catchAsync(async (req, res) => {
       file: req.body.fileId || null,
       replyTo: req.body.replyTo || null,
       viewOnce,
+      forwarded,
       deliveredTo: [req.user._id],
       readBy: [req.user._id],
     };
@@ -111,6 +142,10 @@ const send = catchAsync(async (req, res) => {
       replyTo: message.replyTo ? String(message.replyTo) : null,
       viewOnce: message.viewOnce === true,
       viewedAt: message.viewedAt || null,
+      forwarded: message.forwarded === true,
+      callKind: message.callKind || '',
+      callStatus: message.callStatus || '',
+      poll: message.type === 'poll' && message.poll ? serializePoll(message.poll) : null,
       createdAt: message.createdAt,
     },
   };
@@ -186,7 +221,7 @@ const list = catchAsync(async (req, res) => {
   const messages = await Message.find(filter)
     .sort('-_id')
     .limit(req.query.limit)
-    .select('sender type mode text iv ciphertext file replyTo deliveredTo readBy viewOnce viewedAt viewedBy editedAt deletedAt createdAt')
+    .select('sender type mode text iv ciphertext file replyTo deliveredTo readBy viewOnce viewedAt viewedBy editedAt deletedAt createdAt forwarded callKind callStatus poll')
     .lean();
 
   res.json({
@@ -212,6 +247,10 @@ const list = catchAsync(async (req, res) => {
           deliveredTo: (m.deliveredTo || []).map(String),
           readBy: (m.readBy || []).map(String),
           reactions: m.reactions || {},
+          forwarded: m.forwarded === true,
+          callKind: m.callKind || '',
+          callStatus: m.callStatus || '',
+          poll: m.type === 'poll' && m.poll ? serializePoll(m.poll) : null,
           editedAt: m.editedAt,
           deletedAt: m.deletedAt,
           createdAt: m.createdAt,
@@ -278,6 +317,17 @@ const deleteMessage = catchAsync(async (req, res) => {
   message.file = null;
   await message.save();
 
+  // Unpin if the pinned message was deleted so the banner doesn't point at a tombstone.
+  try {
+    const chatDoc = await Chat.findById(message.chat).select('pinnedMessage');
+    if (chatDoc && String(chatDoc.pinnedMessage || '') === String(message._id)) {
+      chatDoc.pinnedMessage = null;
+      await chatDoc.save();
+    }
+  } catch {
+    // non-fatal
+  }
+
   const io = req.app.get('io');
   if (io) {
     io.to(`chat:${String(message.chat)}`).emit('message:deleted', {
@@ -303,6 +353,7 @@ const clearHistory = catchAsync(async (req, res) => {
     .sort('-_id')
     .select('_id');
   chat.lastMessage = remaining ? remaining._id : null;
+  chat.pinnedMessage = null;
   chat.lastActivity = new Date();
   await chat.save();
 
@@ -311,6 +362,11 @@ const clearHistory = catchAsync(async (req, res) => {
     io.to(`chat:${String(chat._id)}`).emit('chat:cleared', {
       chatId: String(chat._id),
       clearedBy: String(req.user._id),
+    });
+    io.to(`chat:${String(chat._id)}`).emit('chat:pinned', {
+      chatId: String(chat._id),
+      pinnedMessage: null,
+      pinnedBy: String(req.user._id),
     });
   }
 
@@ -327,6 +383,9 @@ const editMessage = catchAsync(async (req, res) => {
   if (!isSender) throw ApiError.forbidden('Only the sender can edit a message', 'not_owner');
 
   if (message.deletedAt) throw ApiError.badRequest('Cannot edit a deleted message', 'message_deleted');
+  if (['poll', 'call', 'system'].includes(message.type)) {
+    throw ApiError.badRequest('This message type cannot be edited', 'not_editable');
+  }
 
   // Text-only editing; mode never changes on edit.
   if ((message.mode || 'encrypted') === 'normal') {
@@ -485,4 +544,164 @@ const markViewed = catchAsync(async (req, res) => {
   res.json({ ok: true, data: { alreadyViewed: false } });
 });
 
-module.exports = { send, list, markRead, markDelivered, deleteMessage, clearHistory, editMessage, addReaction, removeReaction, markViewed };
+function formatMissedCallText(kind, date) {
+  const d = date instanceof Date ? date : new Date(date);
+  let h = d.getHours();
+  const m = String(d.getMinutes()).padStart(2, '0');
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  const label = kind === 'video' ? 'video' : 'voice';
+  return `Missed ${label} call at ${h}:${m} ${ampm}`;
+}
+
+function serializePoll(poll) {
+  if (!poll) return null;
+  const options = Array.isArray(poll.options) ? poll.options.map(String) : [];
+  const votes = Array.isArray(poll.votes) ? poll.votes : options.map(() => []);
+  return {
+    question: String(poll.question || ''),
+    options,
+    votes: options.map((_, i) => (Array.isArray(votes[i]) ? votes[i].map(String) : [])),
+  };
+}
+
+function emitPollUpdated(req, chatId, message) {
+  const io = req.app.get('io');
+  if (!io) return;
+  io.to(`chat:${String(chatId)}`).emit('message:poll_updated', {
+    chatId: String(chatId),
+    messageId: String(message._id),
+    poll: serializePoll(message.poll),
+  });
+}
+
+// Polls are plaintext group-friendly messages: question + 2-10 options, one vote per user.
+const createPoll = catchAsync(async (req, res) => {
+  const chat = await getChatForUser(req.params.id, req.user._id);
+  const question = String(req.body.question || '').trim().slice(0, 300);
+  const options = Array.isArray(req.body.options)
+    ? [...new Set(req.body.options.map((o) => String(o).trim()).filter(Boolean))].slice(0, 10)
+    : [];
+  if (!question || options.length < 2) {
+    throw ApiError.badRequest('question and at least 2 unique options are required', 'poll_required');
+  }
+
+  const message = await Message.create({
+    chat: chat._id,
+    sender: req.user._id,
+    type: 'poll',
+    mode: 'normal',
+    text: question,
+    poll: { question, options, votes: options.map(() => []) },
+    deliveredTo: [req.user._id],
+    readBy: [req.user._id],
+  });
+
+  chat.lastMessage = message._id;
+  chat.lastActivity = new Date();
+  await chat.save();
+
+  const io = req.app.get('io');
+  const payload = {
+    chatId: String(chat._id),
+    message: {
+      id: message._id,
+      sender: String(req.user._id),
+      type: 'poll',
+      mode: 'normal',
+      text: question,
+      poll: serializePoll(message.poll),
+      forwarded: false,
+      createdAt: message.createdAt,
+    },
+  };
+  if (io) {
+    for (const m of chat.members) {
+      const uid = String(m.user._id || m.user);
+      io.to(`user:${uid}`).emit('message:new', { ...payload, toSelf: uid === String(req.user._id) });
+    }
+  }
+
+  res.status(201).json({ ok: true, data: { message: payload.message } });
+});
+
+// One vote per user — voting moves the voter's id to the chosen option.
+const votePoll = catchAsync(async (req, res) => {
+  const chat = await getChatForUser(req.params.id, req.user._id);
+  const message = await Message.findById(req.params.mid);
+  if (!message) throw ApiError.notFound('Message not found', 'message_not_found');
+  if (String(message.chat) !== String(chat._id)) {
+    throw ApiError.badRequest('Message does not belong to this chat', 'chat_mismatch');
+  }
+  if (message.type !== 'poll' || !message.poll) throw ApiError.badRequest('Not a poll message', 'not_poll');
+  if (message.deletedAt) throw ApiError.badRequest('Poll was deleted', 'message_deleted');
+
+  const idx = Number(req.body.optionIndex);
+  const optCount = (message.poll.options || []).length;
+  if (!Number.isInteger(idx) || idx < 0 || idx >= optCount) {
+    throw ApiError.badRequest('Invalid optionIndex', 'invalid_option');
+  }
+
+  const uid = String(req.user._id);
+  const votes = (message.poll.options || []).map((_, i) => {
+    const arr = Array.isArray(message.poll.votes?.[i]) ? message.poll.votes[i].map(String) : [];
+    return arr.filter((id) => id !== uid);
+  });
+  votes[idx].push(req.user._id);
+  message.poll.votes = votes;
+  message.markModified('poll');
+  await message.save();
+
+  emitPollUpdated(req, chat._id, message);
+
+  res.json({ ok: true, data: { poll: serializePoll(message.poll) } });
+});
+
+// Missed-call history entry inside the chat: "Missed voice call at 3:42 PM".
+const logMissedCall = catchAsync(async (req, res) => {
+  const chat = await getChatForUser(req.params.id, req.user._id);
+  const kind = req.body.mediaType === 'video' ? 'video' : 'audio';
+  const now = new Date();
+
+  const message = await Message.create({
+    chat: chat._id,
+    sender: req.user._id,
+    type: 'call',
+    mode: 'normal',
+    text: formatMissedCallText(kind, now),
+    callKind: kind,
+    callStatus: 'missed',
+    deliveredTo: [req.user._id],
+    readBy: [req.user._id],
+  });
+
+  chat.lastMessage = message._id;
+  chat.lastActivity = now;
+  await chat.save();
+
+  const io = req.app.get('io');
+  const payload = {
+    chatId: String(chat._id),
+    message: {
+      id: message._id,
+      sender: String(req.user._id),
+      type: 'call',
+      mode: 'normal',
+      text: message.text,
+      callKind: kind,
+      callStatus: 'missed',
+      forwarded: false,
+      createdAt: message.createdAt,
+    },
+  };
+  if (io) {
+    for (const m of chat.members) {
+      const uid = String(m.user._id || m.user);
+      io.to(`user:${uid}`).emit('message:new', { ...payload, toSelf: uid === String(req.user._id) });
+    }
+  }
+
+  res.status(201).json({ ok: true, data: { message: payload.message } });
+});
+
+module.exports = { send, list, markRead, markDelivered, deleteMessage, clearHistory, editMessage, addReaction, removeReaction, markViewed, createPoll, votePoll, logMissedCall };

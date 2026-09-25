@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import Avatar from '../common/Avatar';
-import { Twemoji } from '../common/EmojiText';
+import { Twemoji, TrashIcon } from '../common/EmojiText';
 import { useAuth } from '../../context/AuthContext';
 import { useSocket } from '../../context/SocketContext';
 
@@ -29,9 +29,10 @@ export default function ChatHeader({ chat, typingNames, onOpenInfo, onCall, onBa
   if (!chat) return <header className="chat-header empty" />;
 
   const isDirect = chat.type === 'direct';
-  const peer = isDirect ? chat.members.find((m) => m.id !== user.id) : null;
+  const members = Array.isArray(chat.members) ? chat.members : [];
+  const peer = isDirect ? members.find((m) => m.id !== user?.id) : null;
   const title = isDirect ? peer?.username || 'Unknown' : chat.groupInfo?.name || 'Group';
-  const online = isDirect && onlineIds.has(String(peer?.id));
+  const online = isDirect && peer && onlineIds.has(String(peer?.id));
 
   let subtitle;
   if (typingNames.length > 0) {
@@ -39,12 +40,12 @@ export default function ChatHeader({ chat, typingNames, onOpenInfo, onCall, onBa
   } else if (isDirect) {
     subtitle = online ? 'online' : 'offline';
   } else {
-    subtitle = `${chat.members.length} members`;
+    subtitle = `${members.length} members`;
   }
 
   const otherMembers = isDirect
     ? []
-    : chat.members.filter((m) => String(m.id) !== String(user.id));
+    : members.filter((m) => String(m.id) !== String(user?.id));
 
   return (
     <header className="chat-header">
@@ -85,14 +86,14 @@ export default function ChatHeader({ chat, typingNames, onOpenInfo, onCall, onBa
           title="Delete messages — clear all history or delete singly"
           disabled={clearing}
         >
-          <Twemoji>🗑️</Twemoji>
+          <TrashIcon />
         </button>
         {deleteOpen && (
           <div className="member-call-picker delete-picker">
             <div className="picker-header">Delete messages</div>
             <div className="delete-hint">
               {messageCount > 0 ? `${messageCount} message${messageCount !== 1 ? 's' : ''} in this chat` : 'No messages loaded'}
-              <br />Single message: hover a bubble → <Twemoji>🗑️</Twemoji>
+              <br />Single message: hover a bubble → <TrashIcon size={14} />
             </div>
             <button
               type="button"
@@ -103,7 +104,7 @@ export default function ChatHeader({ chat, typingNames, onOpenInfo, onCall, onBa
                 if (onClearChat) onClearChat();
               }}
             >
-              <Twemoji>🗑️</Twemoji>
+              <TrashIcon size={15} />
               <span>{clearing ? 'Clearing…' : 'Clear all history in this chat'}</span>
             </button>
             <button type="button" className="picker-member" onClick={() => setDeleteOpen(false)}>
@@ -113,10 +114,10 @@ export default function ChatHeader({ chat, typingNames, onOpenInfo, onCall, onBa
           </div>
         )}
       </div>
-      {isDirect && (
+      {isDirect && peer && (
         <>
-          <button type="button" className="icon-btn" onClick={() => onCall('audio', peer.id, peer.username)} title="Voice call"><Twemoji>📞</Twemoji></button>
-          <button type="button" className="icon-btn" onClick={() => onCall('video', peer.id, peer.username)} title="Video call"><Twemoji>🎥</Twemoji></button>
+          <button type="button" className="icon-btn" onClick={() => onCall('audio', peer.id, peer.username)} title="Voice call" aria-label="Voice call"><Twemoji>📞</Twemoji></button>
+          <button type="button" className="icon-btn" onClick={() => onCall('video', peer.id, peer.username)} title="Video call" aria-label="Video call"><Twemoji>🎥</Twemoji></button>
         </>
       )}
       {!isDirect && otherMembers.length > 0 && (

@@ -20,7 +20,8 @@ const listMyChats = catchAsync(async (req, res) => {
     .sort('-lastActivity')
     .populate('members.user', MEMBER_POPULATE)
     .populate('lastMessage', 'sender type mode text createdAt iv ciphertext deletedAt')
-    .populate('groupInfo', 'name description avatar');
+    .populate('groupInfo', 'name description avatar')
+    .populate('pinnedMessage', 'sender type mode text createdAt poll callKind callStatus');
 
   const data = await Promise.all(
     chats.map(async (c) => {
@@ -62,6 +63,25 @@ const listMyChats = catchAsync(async (req, res) => {
         lastActivity: c.lastActivity,
         createdAt: c.createdAt,
         unreadCount: unread,
+        pinnedMessage: c.pinnedMessage
+          ? {
+              id: c.pinnedMessage._id,
+              sender: c.pinnedMessage.sender,
+              type: c.pinnedMessage.type,
+              mode: c.pinnedMessage.mode === 'normal' ? 'normal' : 'encrypted',
+              text: c.pinnedMessage.mode === 'normal' ? (c.pinnedMessage.text || '') : '',
+              poll: c.pinnedMessage.type === 'poll' && c.pinnedMessage.poll
+                ? {
+                    question: c.pinnedMessage.poll.question || '',
+                    options: (c.pinnedMessage.poll.options || []).map(String),
+                    votes: ((c.pinnedMessage.poll.votes || []).map((v) => (Array.isArray(v) ? v.map(String) : []))),
+                  }
+                : null,
+              callKind: c.pinnedMessage.callKind || '',
+              callStatus: c.pinnedMessage.callStatus || '',
+              createdAt: c.pinnedMessage.createdAt,
+            }
+          : null,
       };
     })
   );
@@ -150,7 +170,8 @@ const createGroup = catchAsync(async (req, res) => {
 const getChat = catchAsync(async (req, res) => {
   const chat = await Chat.findById(req.params.id)
     .populate('members.user', MEMBER_POPULATE)
-    .populate('groupInfo', 'name description avatar');
+    .populate('groupInfo', 'name description avatar')
+    .populate('pinnedMessage', 'sender type mode text createdAt poll callKind callStatus');
 
   if (!chat) throw ApiError.notFound('Chat not found', 'chat_not_found');
   if (!chat.isMember(req.user._id)) throw ApiError.forbidden('Not a member of this chat', 'not_member');
@@ -171,6 +192,16 @@ const getChat = catchAsync(async (req, res) => {
       keyWraps: Object.fromEntries(chat.keyWraps || []),
       createdBy: chat.createdBy,
       createdAt: chat.createdAt,
+      pinnedMessage: chat.pinnedMessage
+        ? {
+            id: chat.pinnedMessage._id,
+            sender: chat.pinnedMessage.sender,
+            type: chat.pinnedMessage.type,
+            mode: chat.pinnedMessage.mode === 'normal' ? 'normal' : 'encrypted',
+            text: chat.pinnedMessage.mode === 'normal' ? (chat.pinnedMessage.text || '') : '',
+            createdAt: chat.pinnedMessage.createdAt,
+          }
+        : null,
     },
   });
 });
@@ -319,4 +350,50 @@ async function assertAdmin(req) {
   return chat;
 }
 
-module.exports = { listMyChats, createDirect, createGroup, getChat, updateGroup, addMembers, removeMember, leaveChat, rotateKeys };
+// Pin a message: banner on top of the chat for everyone. Any member may pin;
+// pinning a deleted message or a message from another chat is rejected.
+const pinMessage = catchAsync(async (req, res) => {
+  const chat = await Chat.findById(req.params.id);
+  if (!chat) throw ApiError.notFound('Chat not found', 'chat_not_found');
+  if (!chat.isMember(req.user._id)) throw ApiError.forbidden('Not a member', 'not_member');
+
+  const message = await Message.findById(req.body.messageId);
+  if (!message) throw ApiError.notFound('Message not found', 'message_not_found');
+  if (String(message.chat) !== String(chat._id)) {
+    throw ApiError.badRequest('Message does not belong to this chat', 'chat_mismatch');
+  }
+  if (message.deletedAt) throw ApiError.badRequest('Cannot pin a deleted message', 'message_deleted');
+
+  chat.pinnedMessage = message._id;
+  await chat.save();
+
+  emitTo(req, 'chat:pinned', {
+    chatId: String(chat._id),
+    pinnedMessage: {
+      id: message._id,
+      sender: message.sender,
+      type: message.type,
+      mode: message.mode === 'normal' ? 'normal' : 'encrypted',
+      text: message.mode === 'normal' ? (message.text || '') : '',
+      createdAt: message.createdAt,
+    },
+    pinnedBy: String(req.user._id),
+  });
+
+  res.json({ ok: true });
+});
+
+const unpinMessage = catchAsync(async (req, res) => {
+  const chat = await Chat.findById(req.params.id);
+  if (!chat) throw ApiError.notFound('Chat not found', 'chat_not_found');
+  if (!chat.isMember(req.user._id)) throw ApiError.forbidden('Not a member', 'not_member');
+
+  chat.pinnedMessage = null;
+  await chat.save();
+
+  emitTo(req, 'chat:pinned', { chatId: String(chat._id), pinnedMessage: null, pinnedBy: String(req.user._id) });
+
+  res.json({ ok: true });
+});
+
+module.exports = { listMyChats, createDirect, createGroup, getChat, updateGroup, addMembers, removeMember, leaveChat, rotateKeys, pinMessage, unpinMessage };

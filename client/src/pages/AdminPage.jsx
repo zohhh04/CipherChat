@@ -127,7 +127,7 @@ export default function AdminPage() {
                     <td>{u.isVerified ? '✔' : '—'}</td>
                     <td>{new Date(u.createdAt).toLocaleDateString()}</td>
                     <td className="actions-cell">
-                      {u.id !== me.id && (
+                      {String(u._id) !== String(me?.id) && (
                         <>
                           <button type="button" className="btn sm" onClick={() => setRole(u._id, u.role === 'admin' ? 'user' : 'admin')}>
                             {u.role === 'admin' ? 'Demote' : 'Promote'}

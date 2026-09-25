@@ -81,12 +81,7 @@ export default function FileAttachment({ file, mine, message, chatId }) {
   const [keyError, setKeyError] = useState('');
   const isViewOnce = !!(file && file.viewOnce) || !!(message && message.viewOnce);
   const isExpired = !!(message && (message.expired || message.viewedAt));
-  let decryptSecureFile = null;
-  try {
-    ({ decryptSecureFile } = useChat());
-  } catch {
-    decryptSecureFile = null;
-  }
+  const { decryptSecureFile } = useChat();
 
   const loadSecure = async (password) => {
     const cacheKey = `${file.fileId}:secure`;

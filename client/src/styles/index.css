@@ -787,20 +787,33 @@ mark.search-hit {
 }
 
 .day-divider {
+  display: block;
   align-self: center;
   text-align: center;
   width: fit-content;
-  margin-left: auto;
-  margin-right: auto;
+  max-width: 90%;
   background: var(--bg-panel);
   color: var(--text-2);
   font-size: 12px;
   font-weight: 500;
   padding: 6px 14px;
   border-radius: 10px;
-  margin: 12px 0;
+  margin: 12px auto;
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
+}
+
+/* Date wrapper spans full width so the divider centers for all chats */
+.message-list > div[id^="msg-"] {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.message-list > div[id^="msg-"] > .day-divider {
+  align-self: center;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* ─── Message Bubbles ───────────────────────────────── */
@@ -1570,6 +1583,38 @@ mark.search-hit {
 .text-input:focus {
   border-color: var(--border-focus);
   box-shadow: 0 0 0 2px var(--accent-glow);
+  background: var(--bg-input);
+}
+
+/* Keep dark input background when browser autofills (Chrome otherwise forces white) */
+.text-input:-webkit-autofill,
+.text-input:-webkit-autofill:hover,
+.text-input:-webkit-autofill:focus,
+.text-input:-webkit-autofill:active,
+.password-field:-webkit-autofill,
+.password-field:-webkit-autofill:hover,
+.password-field:-webkit-autofill:focus,
+.password-field:-webkit-autofill:active,
+.search-input:-webkit-autofill,
+.search-input:-webkit-autofill:hover,
+.search-input:-webkit-autofill:focus,
+.auth-form input:-webkit-autofill,
+.auth-form input:-webkit-autofill:hover,
+.auth-form input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 40px var(--bg-input) inset !important;
+  -webkit-text-fill-color: var(--text-1) !important;
+  caret-color: var(--text-1);
+  background-color: var(--bg-input) !important;
+  color: var(--text-1) !important;
+  transition: background-color 9999s ease-in-out 0s;
+}
+.text-input:autofill,
+.password-field:autofill,
+.search-input:autofill {
+  box-shadow: 0 0 0 40px var(--bg-input) inset !important;
+  -webkit-text-fill-color: var(--text-1) !important;
+  background-color: var(--bg-input) !important;
+  color: var(--text-1) !important;
 }
 
 /* ─── Password field with show/hide eye ─────── */
@@ -3081,6 +3126,28 @@ html[data-theme='light'] img.emoji {
   width: 1.1em;
 }
 
+.trash-icon {
+  flex-shrink: 0;
+}
+.icon-btn .trash-icon {
+  width: 18px;
+  height: 18px;
+}
+.bubble-actions .trash-icon {
+  width: 16px;
+  height: 16px;
+}
+.msg-context-menu .trash-icon,
+.picker-member .trash-icon,
+.delete-hint .trash-icon {
+  width: 15px;
+  height: 15px;
+}
+.chat-item-delete .trash-icon {
+  width: 15px;
+  height: 15px;
+}
+
 .action-btn img.emoji {
   height: 1em;
   width: 1em;
@@ -3974,4 +4041,347 @@ html[data-theme='light'] img.emoji {
 }
 .secure-key-row .search-input {
   flex: 1;
+}
+
+/* ─── Missed-call / pin / poll / forward ─────────────────── */
+.system-row {
+  display: flex;
+  justify-content: center;
+  margin: 8px 0;
+}
+.system-pill {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 999px;
+}
+.call-bubble {
+  border-left: 3px solid #e57373;
+}
+.call-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.call-icon {
+  font-size: 22px;
+}
+.call-text {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-1);
+}
+.call-back-btn {
+  margin-left: 4px;
+}
+.forwarded-label {
+  display: inline-block;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-2);
+  margin-left: 6px;
+}
+.pinned-label {
+  display: inline-block;
+  font-size: 11px;
+  color: #f7ad19;
+  margin-left: 6px;
+}
+.pinned-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(247, 173, 25, 0.1);
+  border-bottom: 1px solid rgba(247, 173, 25, 0.35);
+  cursor: pointer;
+  font-size: 13px;
+}
+.pinned-icon {
+  flex-shrink: 0;
+}
+.pinned-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+}
+.pinned-unpin {
+  flex-shrink: 0;
+}
+.poll-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+}
+.poll-question {
+  font-weight: 600;
+  margin: 0;
+  font-size: 14px;
+}
+.poll-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.poll-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+  cursor: pointer;
+  overflow: hidden;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-1);
+}
+.poll-option:hover {
+  border-color: var(--accent);
+}
+.poll-option.my-vote {
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.poll-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 168, 132, 0.15);
+  pointer-events: none;
+}
+.poll-opt-text {
+  position: relative;
+  flex: 1;
+}
+.poll-count {
+  position: relative;
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.poll-mine {
+  position: relative;
+  color: var(--accent);
+  font-weight: 700;
+}
+.poll-total {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.poll-form .field-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text-1);
+}
+.poll-opt-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.poll-opt-row .search-input {
+  flex: 1;
+}
+.forward-preview {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.forward-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.forward-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-1);
+}
+.forward-item:hover {
+  background: var(--bg-2);
+}
+.forward-name {
+  flex: 1;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forward-type {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.forward-busy {
+  font-size: 11px;
+  color: var(--accent);
+}
+.empty-hint {
+  font-size: 13px;
+  color: var(--text-2);
+  text-align: center;
+  padding: 16px 0;
+}
+
+/* ─── UI Polish Pack — tasteful motion (transform/opacity only) ─── */
+:root {
+  --spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+  --ease-out: cubic-bezier(0.21, 1.02, 0.73, 1);
+}
+
+/* Directional bubble entrance */
+@keyframes bubbleInMine {
+  from { opacity: 0; transform: translateY(8px) translateX(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) translateX(0) scale(1); }
+}
+@keyframes bubbleInTheirs {
+  from { opacity: 0; transform: translateY(8px) translateX(-12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) translateX(0) scale(1); }
+}
+.bubble-row.mine { animation: bubbleInMine 0.25s var(--ease-out); }
+.bubble-row.theirs { animation: bubbleInTheirs 0.25s var(--ease-out); }
+.bubble { transition: box-shadow var(--transition), transform var(--transition); }
+.bubble:hover { transform: translateY(-1px); }
+
+/* Date + system pills fade-slide in */
+@keyframes dayIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.day-divider, .system-pill, .pinned-banner {
+  animation: dayIn 0.3s ease-out;
+}
+
+/* Typing entrance */
+@keyframes typingIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.typing-bubble { animation: typingIn 0.2s ease-out; }
+
+/* Buttons: universal lift + press */
+.btn, .pill-btn, .tab, .chip, .style-btn, .icon-btn, .action-btn, .send-btn, .reaction-chip {
+  transition: transform var(--transition), background var(--transition), color var(--transition), border-color var(--transition), box-shadow var(--transition), opacity var(--transition);
+}
+.btn:hover, .pill-btn:hover, .tab:hover, .chip:hover, .style-btn:hover, .send-btn:hover {
+  transform: translateY(-1px);
+}
+.btn:active, .pill-btn:active, .tab:active, .chip:active, .icon-btn:active, .send-btn:active {
+  transform: translateY(0) scale(0.96);
+  opacity: 0.9;
+}
+
+/* Sidebar rows: gentle nudge, no layout jump */
+.chat-item, .search-result-item, .forward-item, .member-row {
+  transition: transform var(--transition), background var(--transition);
+}
+.chat-item:hover, .search-result-item:hover, .forward-item:hover {
+  transform: translateX(2px);
+}
+.chat-item.active {
+  padding-left: 16px;
+  box-shadow: inset 3px 0 0 var(--accent);
+  border-left-color: transparent;
+}
+.badge { transition: transform var(--transition); }
+.chat-item:hover .badge { transform: scale(1.08); }
+.chat-item-delete { transition: opacity var(--transition), transform var(--transition), background var(--transition); }
+.chat-item-wrap:hover .chat-item-delete { transform: translateX(0); }
+
+/* Inputs: focus lift + placeholder fade */
+.search-input::placeholder, .text-input::placeholder, .message-input textarea::placeholder {
+  transition: opacity var(--transition);
+}
+.search-input:focus::placeholder, .text-input:focus::placeholder, .message-input textarea:focus::placeholder {
+  opacity: 0.6;
+}
+.search-input:focus, .text-input:focus, .message-input textarea:focus {
+  transform: translateY(-1px);
+}
+
+/* Modals: spring entrance */
+.modal, .auth-card {
+  animation: modalIn 0.28s var(--spring);
+}
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.modal.closing, .toast.leaving {
+  opacity: 0;
+  transform: scale(0.97) translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+/* Toast stack polish */
+.toast {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.toast:nth-child(2) { opacity: 0.9; transform: scale(0.98); }
+.toast:nth-child(3) { opacity: 0.8; transform: scale(0.96); }
+
+/* Call overlay entrance + staggered children */
+@keyframes callIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+.call-overlay { animation: callIn 0.35s ease-out; }
+.audio-stage .call-peer-name, .call-status-text, .ringing-dots {
+  animation: fadeUp 0.4s var(--ease-out) both;
+}
+.audio-stage .call-status-text { animation-delay: 0.05s; }
+.audio-stage .ringing-dots { animation-delay: 0.1s; }
+.call-btn:hover { transform: scale(1.08) translateY(-2px); }
+
+/* Auth page stagger */
+.auth-card .brand-shield { animation: fadeUp 0.45s var(--ease-out) both; }
+.auth-brand h1 { animation: fadeUp 0.45s var(--ease-out) 0.06s both; }
+.auth-brand p { animation: fadeUp 0.45s var(--ease-out) 0.12s both; }
+.auth-form { animation: fadeUp 0.45s var(--ease-out) 0.18s both; }
+.auth-links { animation: fadeUp 0.45s var(--ease-out) 0.24s both; }
+
+/* Reaction + emoji pop */
+.reaction-chip:hover, .reaction-option:hover, .emoji-btn:hover {
+  transform: scale(1.12);
+}
+.msg-context-menu, .reaction-picker, .emoji-pop {
+  animation: menuIn 0.16s var(--spring);
+}
+
+/* Attachment loading shimmer (opacity only) */
+@keyframes shimmerPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+.attachment.loading { animation: shimmerPulse 1.4s ease-in-out infinite; }
+
+/* Respect users who prefer less motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

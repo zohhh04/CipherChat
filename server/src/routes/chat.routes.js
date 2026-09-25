@@ -22,12 +22,17 @@ router.post('/:id/leave', validate(v.chatIdParam), chatCtrl.leaveChat);
 
 router.get('/:id/messages', validate(v.listMessages), msgCtrl.list);
 router.post('/:id/messages', validate(v.sendMessage), msgCtrl.send);
+router.post('/:id/polls', validate(v.createPoll), msgCtrl.createPoll);
+router.post('/:id/calls/missed', validate(v.logMissedCall), msgCtrl.logMissedCall);
+router.post('/:id/pin', validate(v.pinMessage), chatCtrl.pinMessage);
+router.delete('/:id/pin', validate(v.chatIdParam), chatCtrl.unpinMessage);
 router.post('/:id/read', validate(v.chatIdParam), msgCtrl.markRead);
 router.post('/:id/delivered', validate(v.chatIdParam), msgCtrl.markDelivered);
 router.delete('/:id/messages/:mid', validate(v.messageIdParam), msgCtrl.deleteMessage);
 router.delete('/:id/messages', validate(v.chatIdParam), msgCtrl.clearHistory);
 router.patch('/:id/messages/:mid', validate(v.editMessage), msgCtrl.editMessage);
 router.post('/:id/messages/:mid/view', validate(v.messageIdParam), msgCtrl.markViewed);
+router.post('/:id/messages/:mid/vote', validate(v.votePoll), msgCtrl.votePoll);
 router.post('/:id/messages/:mid/reactions', validate(v.addReaction), msgCtrl.addReaction);
 router.delete('/:id/messages/:mid/reactions/:emoji', validate(v.removeReaction), msgCtrl.removeReaction);
 

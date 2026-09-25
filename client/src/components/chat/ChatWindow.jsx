@@ -13,11 +13,13 @@ import GroupInfoModal from './GroupInfoModal';
 import NewChatModal from './NewChatModal';
 import NewGroupModal from './NewGroupModal';
 import ChatSearch from './ChatSearch';
+import PollModal from './PollModal';
+import ForwardModal from './ForwardModal';
 import { useCall } from '../../context/CallContext';
 
 export default function ChatWindow() {
   const { user, publicKey } = useAuth();
-  const { chats, activeChatId, messagesByChat, typingByChat, deleteMessage, deleteMessageLocal, clearChatHistory, editMessage, addReaction, removeReaction, getChatMode, setChatMode } = useChat();
+  const { chats, activeChatId, messagesByChat, typingByChat, deleteMessage, deleteMessageLocal, clearChatHistory, editMessage, addReaction, removeReaction, getChatMode, setChatMode, pinMessage, unpinMessage, createPoll, votePoll, openChat } = useChat();
   const [clearing, setClearing] = useState(false);
   const chatMode = activeChatId ? getChatMode(activeChatId) : 'normal';
   const { startCall } = useCall();
@@ -29,6 +31,8 @@ export default function ChatWindow() {
   const [activeMatchIdx, setActiveMatchIdx] = useState(0);
   const [editingMessage, setEditingMessage] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
+  const [pollOpen, setPollOpen] = useState(false);
+  const [forwardMsg, setForwardMsg] = useState(null);
 
   const { registerSync } = useTheme();
 
@@ -46,6 +50,8 @@ export default function ChatWindow() {
     () => Object.values((activeChatId && typingByChat[String(activeChatId)]) || {}).map((t) => t.username),
     [activeChatId, typingByChat]
   );
+  const pinned = chat?.pinnedMessage || null;
+  const pinnedFull = pinned ? messages.find((m) => String(m.id) === String(pinned.id)) : null;
 
   // 🔍 In-chat text search: match ids + active match navigation.
   const searchMatches = useMemo(() => {
@@ -146,6 +152,78 @@ export default function ChatWindow() {
     setReplyTo(null);
   };
 
+  const handlePin = async (message) => {
+    if (!activeChatId) return;
+    try {
+      const alreadyPinned = pinned && String(pinned.id) === String(message.id);
+      if (alreadyPinned) {
+        await unpinMessage(activeChatId);
+        toast('Unpinned', 'info');
+      } else {
+        await pinMessage(activeChatId, message.id);
+        toast('📌 Message pinned', 'success');
+      }
+    } catch (err) {
+      toast(err.message || 'Failed to pin message', 'error');
+    }
+  };
+
+  const handleUnpin = async () => {
+    if (!activeChatId) return;
+    try {
+      await unpinMessage(activeChatId);
+      toast('Unpinned', 'info');
+    } catch (err) {
+      toast(err.message || 'Failed to unpin', 'error');
+    }
+  };
+
+  const handleVote = async (messageId, optionIndex) => {
+    if (!activeChatId) return;
+    try {
+      await votePoll(activeChatId, messageId, optionIndex);
+    } catch (err) {
+      toast(err.message || 'Failed to vote', 'error');
+    }
+  };
+
+  const handleForward = (message) => {
+    setForwardMsg(message);
+  };
+
+  const handleCreatePoll = async (question, options) => {
+    if (!activeChatId) return;
+    await createPoll(activeChatId, question, options);
+    toast('📊 Poll created', 'success');
+  };
+
+  const jumpToPinned = () => {
+    if (!pinned) return;
+    document.getElementById(`msg-${pinned.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  const pinnedText = pinnedFull
+    ? (pinnedFull.type === 'poll' && pinnedFull.poll ? `📊 ${pinnedFull.poll.question}` : (pinnedFull.text || (pinnedFull.file ? '📎 Attachment' : 'Message')))
+    : (pinned?.text || 'Pinned message');
+
+  const handleCallBack = (message) => {
+    if (!chat) return;
+    const otherId = String(message.sender) === String(user.id)
+      ? null
+      : String(message.sender);
+    if (chat.type === 'direct') {
+      const peer = chat.members.find((m) => String(m.id) !== String(user.id));
+      if (peer) {
+        startCall(String(peer.id), peer.username, message.callKind === 'video' ? 'video' : 'audio').catch(() => {});
+        return;
+      }
+    }
+    if (otherId) {
+      const peer = chat.members.find((m) => String(m.id) === otherId);
+      startCall(otherId, peer?.username || 'Unknown', message.callKind === 'video' ? 'video' : 'audio').catch(() => {});
+    }
+  };
+
   return (
     <div className={`app-shell ${activeChatId ? 'has-active' : ''}`}>
       <Sidebar
@@ -171,6 +249,20 @@ export default function ChatWindow() {
                 startCall(peerId, peerName, mediaType).catch(() => {});
               }}
             />
+            {pinned && (
+              <div className="pinned-banner" onClick={jumpToPinned} title="Jump to pinned message">
+                <span className="pinned-icon">📌</span>
+                <span className="pinned-text">{String(pinnedText).slice(0, 120)}</span>
+                <button
+                  type="button"
+                  className="icon-btn pinned-unpin"
+                  title="Unpin"
+                  onClick={(e) => { e.stopPropagation(); handleUnpin(); }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             {searchOpen && (
               <ChatSearch
                 query={searchQuery}
@@ -182,7 +274,7 @@ export default function ChatWindow() {
                 onClose={() => { setSearchOpen(false); setSearchQuery(''); }}
               />
             )}
-            <MessageList messages={messages} chat={chat} myId={user.id} typingNames={typingNames} chatMode={chatMode} searchQuery={searchOpen ? searchQuery : ''} activeMatchId={activeMatchId} onEditMessage={handleEdit} onDeleteMessage={handleDelete} onReplyMessage={handleReply} onAddReaction={handleAddReaction} onRemoveReaction={handleRemoveReaction} />
+            <MessageList messages={messages} chat={chat} myId={user.id} typingNames={typingNames} chatMode={chatMode} searchQuery={searchOpen ? searchQuery : ''} activeMatchId={activeMatchId} pinnedId={pinned?.id} onEditMessage={handleEdit} onDeleteMessage={handleDelete} onReplyMessage={handleReply} onAddReaction={handleAddReaction} onRemoveReaction={handleRemoveReaction} onPinMessage={handlePin} onForwardMessage={handleForward} onVotePoll={handleVote} onCallBack={handleCallBack} />
             <MessageInput
               chatId={activeChatId}
               editingMessage={editingMessage}
@@ -191,8 +283,11 @@ export default function ChatWindow() {
               replyTo={replyTo}
               onReplyCancel={() => setReplyTo(null)}
               chatMode={chatMode}
+              onOpenPoll={() => setPollOpen(true)}
             />
             {infoOpen && <GroupInfoModal chat={chat} onClose={() => setInfoOpen(false)} />}
+            {pollOpen && <PollModal onClose={() => setPollOpen(false)} onCreate={handleCreatePoll} />}
+            {forwardMsg && <ForwardModal message={forwardMsg} onClose={() => setForwardMsg(null)} />}
           </>
         ) : (
           <div className="empty-state">

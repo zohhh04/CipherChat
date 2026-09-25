@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import Avatar from '../common/Avatar';
-import { Twemoji } from '../common/EmojiText';
+import { Twemoji, TrashIcon } from '../common/EmojiText';
 import { useAuth } from '../../context/AuthContext';
 import { useChat } from '../../context/ChatContext';
 import { useSocket } from '../../context/SocketContext';
@@ -23,13 +23,15 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
 
   const chatList = useMemo(
     () =>
-      Object.values(chats)
+      Object.values(chats || {})
         .filter((c) => {
+          if (!c) return false;
           if (!query.trim()) return true;
           const q = query.toLowerCase();
+          const members = Array.isArray(c.members) ? c.members : [];
           return (
-            (c.groupInfo && c.groupInfo.name.toLowerCase().includes(q)) ||
-            c.members.some((m) => m.id !== user.id && m.username.toLowerCase().includes(q))
+            (c.groupInfo && (c.groupInfo.name || '').toLowerCase().includes(q)) ||
+            members.some((m) => m && m.id !== user?.id && (m.username || '').toLowerCase().includes(q))
           );
         })
         .sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity)),
@@ -60,13 +62,16 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
   }, [chats, decryptPreview]);
 
   const titleOf = (c) => {
-    if (c.type === 'group' && c.groupInfo) return c.groupInfo.name;
-    const peer = c.members.find((m) => m.id !== user.id);
+    if (!c) return 'Unknown';
+    if (c.type === 'group' && c.groupInfo) return c.groupInfo.name || 'Group';
+    const members = Array.isArray(c.members) ? c.members : [];
+    const peer = members.find((m) => m && m.id !== user?.id);
     return peer ? peer.username : 'Unknown';
   };
 
   const peerIdOf = (c) => {
-    const peer = c.members.find((m) => m.id !== user.id);
+    const members = Array.isArray(c?.members) ? c.members : [];
+    const peer = members.find((m) => m && m.id !== user?.id);
     return peer ? String(peer.id) : '';
   };
 
@@ -229,11 +234,11 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
               <button
                 type="button"
                 className="chat-item-delete"
-                title={`Clear all history with "${titleOf(c)}" (single: open chat → hover bubble → 🗑️)`}
+                title={`Clear all history with "${titleOf(c)}" (single: open chat → hover bubble → trash icon)`}
                 disabled={clearingId === cid}
                 onClick={(e) => handleClearOne(e, cid, titleOf(c))}
               >
-                <Twemoji>🗑️</Twemoji>
+                <TrashIcon size={15} />
               </button>
             </div>
           );

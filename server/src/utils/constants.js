@@ -1,6 +1,6 @@
 const ROLES = { USER: 'user', ADMIN: 'admin' };
 const CHAT_TYPES = { DIRECT: 'direct', GROUP: 'group' };
-const MESSAGE_TYPES = ['text', 'image', 'video', 'audio', 'file', 'system'];
+const MESSAGE_TYPES = ['text', 'image', 'video', 'audio', 'file', 'system', 'call', 'poll'];
 const CHAT_MODES = { NORMAL: 'normal', ENCRYPTED: 'encrypted' };
 const NOTIFICATION_TYPES = { MESSAGE: 'message', GROUP: 'group', CALL: 'call', SYSTEM: 'system' };
 const TOKEN_TYPES = { VERIFY: 'verify', RESET: 'reset' };

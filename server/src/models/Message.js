@@ -17,6 +17,10 @@ const messageSchema = new mongoose.Schema(
     // Forwarded marker (content itself is re-sent into the target chat).
     forwarded: { type: Boolean, default: false },
 
+    // Missed-call messages: type 'call', plain text like "Missed voice call at 3:42 PM".
+    callKind: { type: String, enum: ['', 'audio', 'video'], default: '' },
+    callStatus: { type: String, enum: ['', 'missed', 'ended', 'declined'], default: '' },
+
     // Polls: question/options are plaintext meta in `text` (JSON {q, opts});
     // votes are authoritative per-option voter lists (one vote per user).
     poll: {

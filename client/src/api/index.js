@@ -58,6 +58,8 @@ export const chatsApi = {
       ...(removedUserId ? { removedUserId } : {}),
     }),
   leave: (id) => http.post(`/chats/${id}/leave`),
+  pin: (id, messageId) => http.post(`/chats/${id}/pin`, { messageId }).then((r) => r.data),
+  unpin: (id) => http.delete(`/chats/${id}/pin`).then((r) => r.data),
 };
 
 export const messagesApi = {
@@ -76,6 +78,12 @@ export const messagesApi = {
   addReaction: (chatId, messageId, emoji) => http.post(`/chats/${chatId}/messages/${messageId}/reactions`, { emoji }),
   removeReaction: (chatId, messageId, emoji) => http.delete(`/chats/${chatId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`),
   markViewed: (chatId, messageId) => http.post(`/chats/${chatId}/messages/${messageId}/view`).then((r) => r.data),
+  createPoll: (chatId, question, options) =>
+    http.post(`/chats/${chatId}/polls`, { question, options }).then((r) => r.data.data.message),
+  votePoll: (chatId, messageId, optionIndex) =>
+    http.post(`/chats/${chatId}/messages/${messageId}/vote`, { optionIndex }).then((r) => r.data.data.poll),
+  logMissedCall: (chatId, mediaType) =>
+    http.post(`/chats/${chatId}/calls/missed`, { mediaType }).then((r) => r.data.data.message),
 };
 
 export const filesApi = {

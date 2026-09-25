@@ -1,5 +1,30 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useSocket } from './SocketContext';
+import { chatsApi, messagesApi } from '../api';
+
+// Missed-call history: write "Missed voice/video call at …" into the 1:1
+// direct chat with the peer so it shows inside the conversation like WhatsApp.
+// Exactly one side logs per scenario (see declineCall/endCall/timeouts below)
+// so online peers don't get duplicates via realtime broadcast.
+async function logMissedCallToDirectChat(peerId, mediaType) {
+  try {
+    const pid = String(peerId);
+    const { chats } = await chatsApi.list();
+    let chat = (chats || []).find(
+      (c) => c.type === 'direct' && (c.members || []).some((m) => String(m.id) === pid)
+    );
+    let chatId = chat ? String(chat.id) : null;
+    if (!chatId) {
+      const created = await chatsApi.createDirect(pid, {});
+      chatId = String(created.chatId);
+    }
+    if (chatId) {
+      await messagesApi.logMissedCall(chatId, mediaType === 'video' ? 'video' : 'audio');
+    }
+  } catch {
+    // best-effort: call UX must never break because history logging failed
+  }
+}
 
 const CallContext = createContext(null);
 
@@ -74,9 +99,18 @@ export function CallProvider({ children }) {
   const peerRef = useRef(null);
   const bufferedIceRef = useRef([]);
   const ringtoneRef = useRef(null);
+  const ringTimeoutRef = useRef(null);
+
+  const clearRingTimeout = useCallback(() => {
+    if (ringTimeoutRef.current) {
+      clearTimeout(ringTimeoutRef.current);
+      ringTimeoutRef.current = null;
+    }
+  }, []);
 
   const cleanup = useCallback(() => {
     if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
+    if (ringTimeoutRef.current) { clearTimeout(ringTimeoutRef.current); ringTimeoutRef.current = null; }
     if (localRef.current) {
       localRef.current.getTracks().forEach((t) => t.stop());
       localRef.current = null;
@@ -159,17 +193,29 @@ export function CallProvider({ children }) {
       try {
         await getMedia(mediaType);
         emit('webrtc:call', { to: String(peerId), mediaType });
+        // Outgoing unanswered for 45s → treat as missed, hang up + log history.
+        clearRingTimeout();
+        ringTimeoutRef.current = setTimeout(() => {
+          const pid = peerRef.current;
+          const mt = mediaType;
+          if (pid) emit('webrtc:end', { to: pid });
+          if (pid) void logMissedCallToDirectChat(pid, mt);
+          cleanup();
+          setError('No answer — logged as missed call');
+        }, 45000);
       } catch {
         cleanup();
         setError('Camera/microphone permission denied');
         throw new Error('permission');
       }
     },
-    [emit, getMedia, cleanup]
+    [emit, getMedia, cleanup, clearRingTimeout]
   );
 
   const acceptCall = useCallback(async () => {
+    if (!call) return;
     if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
+    clearRingTimeout();
     setCall((c) => (c ? { ...c, state: 'active' } : c));
     try {
       await getMedia(call.mediaType);
@@ -179,18 +225,33 @@ export function CallProvider({ children }) {
       cleanup();
       setError('Camera/microphone permission denied');
     }
-  }, [call, emit, getMedia, cleanup]);
+  }, [call, emit, getMedia, cleanup, clearRingTimeout]);
 
   const declineCall = useCallback(() => {
     if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
-    emit('webrtc:answer', { to: call.peerId, accept: false });
+    clearRingTimeout();
+    const pid = call ? call.peerId : peerRef.current;
+    const mt = call ? call.mediaType : 'audio';
+    if (call) emit('webrtc:answer', { to: call.peerId, accept: false });
+    // Callee declined → callee logs the missed-call history entry.
+    if (pid) void logMissedCallToDirectChat(pid, mt);
     cleanup();
-  }, [call, emit, cleanup]);
+  }, [call, emit, cleanup, clearRingTimeout]);
 
   const endCall = useCallback(() => {
-    if (peerRef.current) emit('webrtc:end', { to: peerRef.current });
+    clearRingTimeout();
+    // Caller cancelling an outgoing (never-connected) call logs the missed entry.
+    // Callee ending an active call, or either side ending an active call, logs nothing.
+    if (call && call.state === 'outgoing' && peerRef.current) {
+      const pid = peerRef.current;
+      const mt = call.mediaType;
+      emit('webrtc:end', { to: pid });
+      void logMissedCallToDirectChat(pid, mt);
+    } else if (peerRef.current) {
+      emit('webrtc:end', { to: peerRef.current });
+    }
     cleanup();
-  }, [emit, cleanup]);
+  }, [emit, cleanup, call, clearRingTimeout]);
 
   useEffect(() => {
     const offs = [];
@@ -200,12 +261,21 @@ export function CallProvider({ children }) {
         peerRef.current = String(from);
         setCall({ state: 'incoming', peerId: String(from), peerName: fromName, mediaType, muted: false, cameraOff: false, sharing: false });
         if (!ringtoneRef.current) { ringtoneRef.current = createRingtone(); ringtoneRef.current.start(); }
+        // Incoming ringing 60s with no answer (caller vanished) → callee logs missed.
+        clearRingTimeout();
+        ringTimeoutRef.current = setTimeout(() => {
+          void logMissedCallToDirectChat(String(from), mediaType);
+          if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
+          cleanup();
+          setError('Missed call — logged in chat');
+        }, 60000);
       })
     );
 
     offs.push(
       subscribe('call:busy', () => {
         if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
+        clearRingTimeout();
         setError('User is busy');
         setTimeout(cleanup, 1200);
       })
@@ -215,10 +285,13 @@ export function CallProvider({ children }) {
       subscribe('call:answered', async ({ from, accept }) => {
         if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
         if (!accept) {
+          clearRingTimeout();
+          // Callee declined and already logged history; caller just shows status.
           setError('Call declined');
           setTimeout(cleanup, 1000);
           return;
         }
+        clearRingTimeout();
         setCall((c) => (c ? { ...c, state: 'active' } : c));
         const pc = buildPeerConnection(String(from));
         attachLocalTracks(pc);
@@ -262,11 +335,12 @@ export function CallProvider({ children }) {
 
     offs.push(subscribe('call:ended', () => {
       if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
+      clearRingTimeout();
       cleanup();
     }));
 
     return () => offs.forEach((off) => off());
-  }, [subscribe, emit, cleanup]);
+  }, [subscribe, emit, cleanup, clearRingTimeout]);
 
   const toggleMute = useCallback(() => {
     setCall((c) => {

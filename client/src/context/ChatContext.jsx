@@ -221,11 +221,27 @@ export function ChatProvider({ children }) {
         reactions,
         viewedAt: m.viewedAt || null,
         viewedBy: (m.viewedBy || []).map(String),
+        forwarded: m.forwarded === true,
+        callKind: m.callKind || '',
+        callStatus: m.callStatus || '',
+        poll: m.type === 'poll' && m.poll
+          ? {
+              question: String(m.poll.question || m.text || ''),
+              options: (m.poll.options || []).map(String),
+              votes: (m.poll.options || []).map((_, i) => (Array.isArray(m.poll.votes?.[i]) ? m.poll.votes[i].map(String) : [])),
+            }
+          : null,
       };
       // 🟢 Normal: plaintext straight from server, no keys needed.
       if (base.mode === 'normal') {
         const viewOnce = false; // view-once is a Secure-mode feature
         const expired = !!m.deletedAt;
+        if (base.type === 'poll') {
+          return { ...base, viewOnce, expired, text: expired ? '' : (base.poll?.question || m.text || ''), file: null };
+        }
+        if (base.type === 'call' || base.type === 'system') {
+          return { ...base, viewOnce, expired, text: expired ? '' : (m.text || ''), file: null };
+        }
         if (base.type !== 'text') {
           let meta = {};
           try {
@@ -444,6 +460,7 @@ export function ChatProvider({ children }) {
         deliveredTo: [user.id],
         readBy: [user.id],
         reactions: {},
+        forwarded: opts.forwarded === true,
       };
       setMessagesByChat((prev) => ({ ...prev, [String(chatId)]: [...(prev[String(chatId)] || []), optimistic] }));
       setChats((prev) => ({ ...prev, [String(chatId)]: { ...prev[String(chatId)], lastActivity: new Date().toISOString() } }));
@@ -457,6 +474,7 @@ export function ChatProvider({ children }) {
             type: 'text',
             text,
             ...(replyToId ? { replyTo: replyToId } : {}),
+            ...(opts.forwarded === true ? { forwarded: true } : {}),
           };
         } else {
           // 🔐 Secure: encrypt with the sender's Settings key. Receiver sees
@@ -473,6 +491,7 @@ export function ChatProvider({ children }) {
             iv: packIv(payload.salt, payload.iv),
             ciphertext: payload.ciphertext,
             ...(replyToId ? { replyTo: replyToId } : {}),
+            ...(opts.forwarded === true ? { forwarded: true } : {}),
           };
         }
         const message = await messagesApi.send(chatId, body);
@@ -917,6 +936,133 @@ export function ChatProvider({ children }) {
     }));
   }, []);
 
+  // 📌 Pin a message — server stores chat.pinnedMessage + emits chat:pinned.
+  const pinMessage = useCallback(async (chatId, messageId) => {
+    await chatsApi.pin(chatId, messageId);
+    const cid = String(chatId);
+    const msg = (messagesByChat[cid] || []).find((m) => String(m.id) === String(messageId));
+    setChats((prev) => {
+      const c = prev[cid];
+      if (!c) return prev;
+      return {
+        ...prev,
+        [cid]: {
+          ...c,
+          pinnedMessage: msg
+            ? { id: msg.id, sender: msg.sender, type: msg.type, mode: msg.mode, text: msg.text || msg.poll?.question || '', createdAt: msg.createdAt }
+            : c.pinnedMessage,
+        },
+      };
+    });
+  }, [messagesByChat]);
+
+  const unpinMessage = useCallback(async (chatId) => {
+    await chatsApi.unpin(chatId);
+    const cid = String(chatId);
+    setChats((prev) => {
+      const c = prev[cid];
+      if (!c) return prev;
+      return { ...prev, [cid]: { ...c, pinnedMessage: null } };
+    });
+  }, []);
+
+  // 📊 Polls: create (plaintext, group-friendly) + vote (one vote per user).
+  const createPoll = useCallback(async (chatId, question, options) => {
+    const message = await messagesApi.createPoll(chatId, question, options);
+    const chat = chatsRef.current[String(chatId)] || chats[String(chatId)];
+    if (chat) {
+      const normalized = await normalizeMessage(chat, {
+        ...message,
+        deliveredTo: [user.id],
+        readBy: [user.id],
+      });
+      setMessagesByChat((prev) => ({ ...prev, [String(chatId)]: [...(prev[String(chatId)] || []), normalized] }));
+    }
+    return message;
+  }, [chats, normalizeMessage, user]);
+
+  const votePoll = useCallback(async (chatId, messageId, optionIndex) => {
+    const poll = await messagesApi.votePoll(chatId, messageId, optionIndex);
+    const cid = String(chatId);
+    setMessagesByChat((prev) => ({
+      ...prev,
+      [cid]: (prev[cid] || []).map((m) =>
+        String(m.id) === String(messageId)
+          ? { ...m, poll: { question: poll.question, options: poll.options, votes: poll.votes } }
+          : m
+      ),
+    }));
+    return poll;
+  }, []);
+
+  // ⏩ Forward: re-send content into another chat with forwarded:true.
+  // Client-side re-send keeps E2EE intact (decrypt with source key, send with target mode).
+  const forwardMessage = useCallback(async (sourceMsg, targetChatId, opts = {}) => {
+    const cid = String(targetChatId);
+    const target = chatsRef.current[cid] || chats[cid];
+    if (!target) throw new Error('Target chat not loaded');
+    if (sourceMsg.type === 'poll' && sourceMsg.poll) {
+      return createPoll(cid, sourceMsg.poll.question, sourceMsg.poll.options);
+    }
+    if (sourceMsg.file && !sourceMsg.expired && !sourceMsg.deletedAt) {
+      // File forward: re-send text reference is not enough (bytes are per-chat encrypted).
+      // For plaintext files the server bytes can be re-referenced; for secure files
+      // fall back to text-forward with a note since bytes can't be re-keyed without download.
+      if (sourceMsg.file.plain && sourceMsg.file.fileId) {
+        const meta = { n: sourceMsg.file.name || 'attachment', m: sourceMsg.file.mime || '', s: sourceMsg.file.size || 0 };
+        if (sourceMsg.file.duration) meta.d = sourceMsg.file.duration;
+        const sent = await messagesApi.send(cid, {
+          mode: 'normal',
+          type: sourceMsg.type,
+          text: JSON.stringify(meta),
+          fileId: String(sourceMsg.file.fileId),
+          forwarded: true,
+        });
+        const normalized = await normalizeMessage(target, { ...sent, deliveredTo: [user.id], readBy: [user.id] });
+        setMessagesByChat((prev) => ({ ...prev, [cid]: [...(prev[cid] || []), normalized] }));
+        return sent;
+      }
+      const label = sourceMsg.file.name || 'attachment';
+      return sendText(cid, `↪ Forwarded file: ${label} (re-attach to share bytes)`, undefined, { mode: opts.mode || modeByChat[cid] || DEFAULT_CHAT_MODE, forwarded: true });
+    }
+    const text = String(sourceMsg.text || '').trim() || '(forwarded message)';
+    return sendText(cid, text, undefined, { mode: opts.mode || modeByChat[cid] || DEFAULT_CHAT_MODE, forwarded: true });
+  }, [chats, createPoll, sendText, normalizeMessage, user, modeByChat]);
+
+  // 📞 Missed-call history entry inside a direct chat.
+  const logMissedCall = useCallback(async (chatId, mediaType) => {
+    try {
+      const message = await messagesApi.logMissedCall(chatId, mediaType === 'video' ? 'video' : 'audio');
+      const chat = chatsRef.current[String(chatId)] || chats[String(chatId)];
+      if (chat) {
+        const normalized = await normalizeMessage(chat, { ...message, deliveredTo: [user.id], readBy: [user.id] });
+        setMessagesByChat((prev) => {
+          const list = prev[String(chatId)] || [];
+          if (list.some((m) => String(m.id) === String(normalized.id))) return prev;
+          return { ...prev, [String(chatId)]: [...list, normalized] };
+        });
+      }
+      return message;
+    } catch {
+      return null;
+    }
+  }, [chats, normalizeMessage, user]);
+
+  // Resolve (or create) the 1:1 direct chat with a peer so a missed call lands in it.
+  const logMissedCallForPeer = useCallback(async (peerId, mediaType) => {
+    try {
+      const existing = Object.values(chatsRef.current || {}).find(
+        (c) => c.type === 'direct' && (c.members || []).some((m) => String(m.id) === String(peerId))
+      );
+      if (existing) return logMissedCall(existing.id, mediaType);
+      const { chatId } = await chatsApi.createDirect(String(peerId), {});
+      await refreshChats();
+      return logMissedCall(chatId, mediaType);
+    } catch {
+      return null;
+    }
+  }, [logMissedCall, refreshChats]);
+
   const decryptPreview = useCallback(
     async (chat) => {
       const lm = chat && chat.lastMessage;
@@ -924,6 +1070,9 @@ export function ChatProvider({ children }) {
       if (lm.viewOnce && lm.viewedAt) return '👁️ View-once photo (expired)';
       // 🟢 Normal: plaintext preview, no keys needed.
       if ((lm.mode || 'encrypted') === 'normal') {
+        if (lm.type === 'poll') return `📊 ${String(lm.text || 'Poll')}`.slice(0, 80);
+        if (lm.type === 'call') return `📞 ${String(lm.text || 'Missed call')}`.slice(0, 80);
+        if (lm.type === 'system') return String(lm.text || '').slice(0, 80) || null;
         if (lm.type && lm.type !== 'text') {
           try {
             const meta = JSON.parse(lm.text || '{}');
@@ -1033,9 +1182,14 @@ export function ChatProvider({ children }) {
         setMessagesByChat((prev) => ({
           ...prev,
           [String(chatId)]: (prev[String(chatId)] || []).map((m) =>
-            m.id === String(messageId) ? { ...m, deletedAt: new Date().toISOString(), text: '', file: null } : m
+            m.id === String(messageId) ? { ...m, deletedAt: new Date().toISOString(), text: '', file: null, poll: null } : m
           ),
         }));
+        setChats((prev) => {
+          const c = prev[String(chatId)];
+          if (!c || !c.pinnedMessage || String(c.pinnedMessage.id) !== String(messageId)) return prev;
+          return { ...prev, [String(chatId)]: { ...c, pinnedMessage: null } };
+        });
       })
     );
 
@@ -1048,7 +1202,7 @@ export function ChatProvider({ children }) {
           if (!c) return prev;
           return {
             ...prev,
-            [cid]: { ...c, lastMessage: null, unreadCount: 0, lastActivity: new Date().toISOString() },
+            [cid]: { ...c, lastMessage: null, unreadCount: 0, lastActivity: new Date().toISOString(), pinnedMessage: null },
           };
         });
       })
@@ -1171,6 +1325,43 @@ export function ChatProvider({ children }) {
       subscribe('chat:updated', () =>
         refreshChats().catch(() => {})
       )
+    );
+    offs.push(
+      subscribe('message:poll_updated', ({ chatId, messageId, poll }) => {
+        const cid = String(chatId);
+        setMessagesByChat((prev) => ({
+          ...prev,
+          [cid]: (prev[cid] || []).map((m) =>
+            String(m.id) === String(messageId)
+              ? { ...m, poll: { question: poll.question, options: poll.options, votes: poll.votes } }
+              : m
+          ),
+        }));
+      })
+    );
+    offs.push(
+      subscribe('chat:pinned', ({ chatId, pinnedMessage }) => {
+        const cid = String(chatId);
+        setChats((prev) => {
+          const c = prev[cid];
+          if (!c) return prev;
+          if (!pinnedMessage) return { ...prev, [cid]: { ...c, pinnedMessage: null } };
+          return {
+            ...prev,
+            [cid]: {
+              ...c,
+              pinnedMessage: {
+                id: String(pinnedMessage.id),
+                sender: String(pinnedMessage.sender || ''),
+                type: pinnedMessage.type || 'text',
+                mode: pinnedMessage.mode || 'normal',
+                text: pinnedMessage.text || '',
+                createdAt: pinnedMessage.createdAt,
+              },
+            },
+          };
+        });
+      })
     );
     // DP change by anyone -> refresh so new avatar is visible to everyone
     offs.push(
@@ -1382,6 +1573,13 @@ export function ChatProvider({ children }) {
       unlockSecureMessage,
       getChatPasscode,
       decryptSecureFile,
+      pinMessage,
+      unpinMessage,
+      createPoll,
+      votePoll,
+      forwardMessage,
+      logMissedCall,
+      logMissedCallForPeer,
     }),
     [
       chats, activeChatId, messagesByChat, typingByChat, loadingChats, unreadTotal, messageUrgency, modeByChat,
@@ -1389,6 +1587,7 @@ export function ChatProvider({ children }) {
       openChat, sendText, sendFile, deleteMessage, deleteMessageLocal, clearChatHistory, editMessage, createDirect, createGroup,
       addMember, removeMemberAndRotate, leaveChat, rotateGroupKeyManually, notifyTyping, decryptPreview, refreshChats, loadMessages, getPublicKeyFor, searchMessages, addReaction, removeReaction, detectMessageUrgency, markViewOnce,
       unlockSecureMessage, getChatPasscode, decryptSecureFile,
+      pinMessage, unpinMessage, createPoll, votePoll, forwardMessage, logMissedCall, logMissedCallForPeer,
     ]
   );
 

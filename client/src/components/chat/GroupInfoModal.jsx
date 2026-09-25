@@ -11,14 +11,15 @@ export default function GroupInfoModal({ chat, onClose }) {
   const { user } = useAuth();
   const { onlineIds } = useSocket();
   const { addMember, removeMemberAndRotate, leaveChat, rotateGroupKeyManually, chats, refreshChats } = useChat();
-  const [name, setName] = useState(chat.groupInfo?.name || '');
-  const [description, setDescription] = useState(chat.groupInfo?.description || '');
+  const [name, setName] = useState(chat?.groupInfo?.name || '');
+  const [description, setDescription] = useState(chat?.groupInfo?.description || '');
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [busy, setBusy] = useState(false);
 
-  const isAdmin = chat.members.find((m) => m.id === user.id)?.isAdmin;
+  const members = Array.isArray(chat?.members) ? chat.members : [];
+  const isAdmin = members.find((m) => m.id === user?.id)?.isAdmin;
 
   useEffect(() => {
     if (!adding || query.trim().length < 1) {
@@ -29,7 +30,7 @@ export default function GroupInfoModal({ chat, onClose }) {
     const t = setTimeout(async () => {
       try {
         const { users } = await usersApi.search(query.trim());
-        if (alive) setResults(users.filter((u) => !chat.members.some((m) => String(m.id) === String(u._id))));
+        if (alive) setResults((users || []).filter((u) => !members.some((m) => String(m.id) === String(u._id))));
       } catch {
         void 0;
       }
