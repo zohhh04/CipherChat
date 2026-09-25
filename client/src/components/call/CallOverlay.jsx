@@ -42,7 +42,41 @@ export default function CallOverlay() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
+  const stageRef = useRef(null);
+  const [pipPos, setPipPos] = useState(null); // {x, y} in px relative to stage, null = default corner
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef(null);
   const timer = useCallTimer(call?.state === 'active');
+
+  // Draggable local PiP: pointer drag anywhere on the small video, clamped to stage.
+  const onPipPointerDown = (e) => {
+    if (!stageRef.current || !localVideoRef.current) return;
+    e.preventDefault();
+    const stage = stageRef.current.getBoundingClientRect();
+    const el = localVideoRef.current.getBoundingClientRect();
+    dragRef.current = {
+      offsetX: e.clientX - el.left,
+      offsetY: e.clientY - el.top,
+      w: el.width,
+      h: el.height,
+      stage,
+    };
+    setDragging(true);
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onPipPointerMove = (e) => {
+    if (!dragging || !dragRef.current) return;
+    const { offsetX, offsetY, w, h, stage } = dragRef.current;
+    let x = e.clientX - stage.left - offsetX;
+    let y = e.clientY - stage.top - offsetY;
+    x = Math.max(8, Math.min(x, stage.width - w - 8));
+    y = Math.max(8, Math.min(y, stage.height - h - 8));
+    setPipPos({ x, y });
+  };
+  const onPipPointerUp = () => {
+    setDragging(false);
+    dragRef.current = null;
+  };
 
   useEffect(() => {
     if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream;
@@ -66,7 +100,7 @@ export default function CallOverlay() {
       <div className="call-bg-glow" />
 
       {isVideo ? (
-        <div className="video-stage">
+        <div className="video-stage" ref={stageRef}>
           <video ref={remoteVideoRef} autoPlay playsInline className="remote-video" />
           {!remoteStream && (
             <div className="video-placeholder">
@@ -84,7 +118,20 @@ export default function CallOverlay() {
               )}
             </div>
           )}
-          <video ref={localVideoRef} autoPlay playsInline muted className="local-video" />
+          <video
+            ref={localVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className={`local-video${dragging ? ' dragging' : ''}`}
+            style={pipPos ? { left: pipPos.x, top: pipPos.y, right: 'auto', bottom: 'auto' } : undefined}
+            onPointerDown={onPipPointerDown}
+            onPointerMove={onPipPointerMove}
+            onPointerUp={onPipPointerUp}
+            onPointerCancel={onPipPointerUp}
+            onDoubleClick={() => setPipPos(null)}
+            title="Drag to move • double-click to reset"
+          />
           {isActive && (
             <div className="call-badge">
               <span className="badge-dot" /> Encrypted

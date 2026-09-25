@@ -10,8 +10,8 @@ import { chatListTime } from '../../utils/format';
 import { toast } from '../common/Toast';
 
 export default function Sidebar({ onNewChat, onNewGroup }) {
-  const { user, logout, identityReady } = useAuth();
-  const { chats, activeChatId, openChat, typingByChat, unreadTotal, loadingChats, decryptPreview, searchMessages, messageUrgency } = useChat();
+  const { user, logout } = useAuth();
+  const { chats, activeChatId, openChat, typingByChat, unreadTotal, loadingChats, decryptPreview, searchMessages, messageUrgency, clearChatHistory } = useChat();
   const { onlineIds, connected } = useSocket();
   const { theme, toggle } = useTheme();
   const navigate = useNavigate();
@@ -19,6 +19,7 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
   const [previews, setPreviews] = useState({});
   const [searchMode, setSearchMode] = useState(false);
   const [searchResults, setSearchResults] = useState([]);
+  const [clearingId, setClearingId] = useState(null);
 
   const chatList = useMemo(
     () =>
@@ -75,11 +76,26 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
     navigate('/login');
   };
 
+  const handleClearOne = async (e, chatId, title) => {
+    e.stopPropagation();
+    if (clearingId) return;
+    if (!confirm(`Clear ALL history with "${title}"?\n\nThis deletes messages for EVERYONE in the chat and cannot be undone.\n\nSingle messages: open the chat, hover a bubble → 🗑️.`)) return;
+    setClearingId(chatId);
+    try {
+      await clearChatHistory(chatId);
+      toast('Chat history cleared', 'success');
+    } catch (err) {
+      toast(err.message || 'Failed to clear chat history', 'error');
+    } finally {
+      setClearingId(null);
+    }
+  };
+
   return (
     <aside className="sidebar">
       <header className="sidebar-header">
         <div className="me-row">
-          <Avatar id={user.id} name={user.username} size={42} />
+          <Avatar id={user.id} name={user.username} size={42} avatar={user.avatar} />
           <div className="me-meta">
             <strong>{user.username}</strong>
             <span className={`conn ${connected ? 'on' : 'off'}`}>{connected ? 'online' : 'connecting…'}</span>
@@ -123,8 +139,7 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
             type="button"
             onClick={onNewChat}
             className="action-btn"
-            title={identityReady ? 'New chat' : 'Unlock encryption keys first'}
-            disabled={!identityReady}
+            title="New chat"
           >
             <Twemoji>💬</Twemoji>
           </button>
@@ -132,16 +147,12 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
             type="button"
             onClick={onNewGroup}
             className="action-btn"
-            title={identityReady ? 'New group' : 'Unlock encryption keys first'}
-            disabled={!identityReady}
+            title="New group"
           >
             <Twemoji>👥</Twemoji>
           </button>
         </div>
       </div>
-      {!identityReady && (
-        <div className="lock-banner"><Twemoji>🔒</Twemoji> Enter your password to unlock encryption</div>
-      )}
 
       <div className="chat-list">
         {loadingChats && chatList.length === 0 && <p className="empty-hint">Loading…</p>}
@@ -177,17 +188,21 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
           const typers = Object.values(typingByChat[cid] || {});
           const urgency = messageUrgency[cid]?.urgency || 'normal';
           return (
+            <div
+              key={cid}
+              className={`chat-item-wrap ${activeChatId === cid ? 'active' : ''}`}
+            >
             <button
               type="button"
-              key={cid}
               className={`chat-item ${activeChatId === cid ? 'active' : ''}`}
               data-urgency={urgency}
               onClick={() => openChat(cid)}
             >
               <Avatar
-                id={cid}
+                id={c.type === 'direct' ? peerIdOf(c) : cid}
                 name={titleOf(c)}
                 size={44}
+                avatar={c.type === 'direct' ? (c.members.find((m) => m.id !== user.id)?.avatar || '') : ''}
                 online={c.type === 'direct' && onlineIds.has(peerIdOf(c))}
               />
               <div className="chat-item-main">
@@ -211,6 +226,16 @@ export default function Sidebar({ onNewChat, onNewGroup }) {
                 </div>
               </div>
             </button>
+              <button
+                type="button"
+                className="chat-item-delete"
+                title={`Clear all history with "${titleOf(c)}" (single: open chat → hover bubble → 🗑️)`}
+                disabled={clearingId === cid}
+                onClick={(e) => handleClearOne(e, cid, titleOf(c))}
+              >
+                <Twemoji>🗑️</Twemoji>
+              </button>
+            </div>
           );
         })}
       </div>

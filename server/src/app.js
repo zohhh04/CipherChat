@@ -34,7 +34,7 @@ function createApp() {
           upgradeInsecureRequests: config.isProd ? [] : null,
         },
       },
-      crossOriginResourcePolicy: { policy: 'same-site' },
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
     })
   );
 

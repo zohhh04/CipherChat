@@ -27,6 +27,24 @@ async function requireAuth(req, _res, next) {
   }
 }
 
+async function optionalAuth(req, _res, next) {
+  try {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!token) return next();
+    try {
+      const payload = verifyAccessToken(token);
+      const user = await User.findById(payload.sub).select('+publicKey');
+      if (user && !user.isBanned) req.user = user;
+    } catch {
+      // Invalid/expired token on an optional-auth route: continue anonymous.
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
 function requireVerified(req, res, next) {
   if (!req.user.isVerified) {
     return next(ApiError.forbidden('Verify your email to continue', 'email_unverified'));
@@ -41,4 +59,4 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requireVerified, requireAdmin };
+module.exports = { requireAuth, optionalAuth, requireVerified, requireAdmin };

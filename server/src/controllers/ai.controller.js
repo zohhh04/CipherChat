@@ -13,35 +13,69 @@ async function getChatForUser(chatId, userId) {
 
 const summarize = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const { style = 'brief', limit = 50 } = req.body;
+  const { style = 'brief', limit = 50, messages: clientMessages = [] } = req.body;
 
   await getChatForUser(id, req.user._id);
 
-  const messages = await Message.find({ chat: id, deletedAt: null })
-    .sort('-_id')
-    .limit(Math.min(limit, 100))
-    .select('sender type iv ciphertext createdAt')
-    .lean();
+  let plainMessages;
+  let messageCount = 0;
 
-  if (messages.length === 0) {
+  // Messages are E2EE — server cannot decrypt. Prefer decrypted texts sent by client.
+  if (Array.isArray(clientMessages) && clientMessages.length > 0) {
+    plainMessages = clientMessages
+      .slice(-Math.min(limit, 100))
+      .map((m) => ({
+        sender: m.sender || 'User',
+        text: m.type && m.type !== 'text' ? `[${m.type}${m.fileName ? `: ${m.fileName}` : ''}]` : (m.text || ''),
+      }))
+      .filter((m) => m.text && m.text.trim().length > 0);
+    messageCount = plainMessages.length;
+  } else {
+    const messages = await Message.find({ chat: id, deletedAt: null })
+      .sort('-_id')
+      .limit(Math.min(limit, 100))
+      .select('sender type mode text createdAt')
+      .lean();
+
+    if (messages.length === 0) {
+      return res.json({ ok: true, data: { summary: 'No messages to summarize.' } });
+    }
+
+    const senderNames = {};
+    const members = (await Chat.findById(id).populate('members.user', 'username')).members || [];
+    for (const m of members) {
+      if (m.user) senderNames[String(m.user._id)] = m.user.username;
+    }
+
+    // 🟢 normal messages have server-side plaintext and can be summarized directly.
+    // 🔐 encrypted messages need client plaintext — ask client to send `messages`.
+    plainMessages = messages
+      .reverse()
+      .map((m) => ({
+        sender: senderNames[String(m.sender)] || 'User',
+        text:
+          (m.mode || 'encrypted') === 'normal'
+            ? (m.text || (m.type === 'text' ? '' : `[${m.type}]`))
+            : (m.type === 'text' ? '' : `[${m.type}]`),
+      }))
+      .filter((m) => m.text && m.text.trim().length > 0);
+    messageCount = plainMessages.length;
+
+    if (plainMessages.length === 0) {
+      throw ApiError.badRequest(
+        'No readable messages provided. Send decrypted `messages: [{sender, text}]` in the request body (messages are end-to-end encrypted).',
+        'messages_required'
+      );
+    }
+  }
+
+  if (plainMessages.length === 0) {
     return res.json({ ok: true, data: { summary: 'No messages to summarize.' } });
   }
 
-  const senderNames = {};
-  const members = (await Chat.findById(id).populate('members.user', 'username')).members || [];
-  for (const m of members) {
-    if (m.user) senderNames[String(m.user._id)] = m.user.username;
-  }
-
-  const plainMessages = messages.reverse().map((m) => ({
-    sender: senderNames[String(m.sender)] || 'User',
-    text: m.type === 'text' ? `[encrypted message]` : `[${m.type}]`,
-    createdAt: m.createdAt,
-  }));
-
   const summary = await aiService.summarize(plainMessages, style);
 
-  res.json({ ok: true, data: { summary, messageCount: messages.length } });
+  res.json({ ok: true, data: { summary, messageCount } });
 });
 
 const smartReplies = catchAsync(async (req, res) => {
@@ -60,7 +94,7 @@ const smartReplies = catchAsync(async (req, res) => {
     const messages = await Message.find({ chat: id, deletedAt: null })
       .sort('-_id')
       .limit(10)
-      .select('sender type iv ciphertext createdAt')
+      .select('sender type mode text createdAt')
       .lean();
 
     const senderNames = {};
@@ -71,7 +105,10 @@ const smartReplies = catchAsync(async (req, res) => {
 
     plainMessages = messages.reverse().map((m) => ({
       sender: senderNames[String(m.sender)] || 'User',
-      text: m.type === 'text' ? `[encrypted message]` : `[${m.type}]`,
+      text:
+        (m.mode || 'encrypted') === 'normal'
+          ? (m.text || (m.type === 'text' ? '' : `[${m.type}]`))
+          : (m.type === 'text' ? `[encrypted message]` : `[${m.type}]`),
     }));
   }
 
@@ -96,21 +133,6 @@ const translate = catchAsync(async (req, res) => {
   res.json({ ok: true, data: { translated, sourceLang: 'auto', targetLang } });
 });
 
-const transcribe = catchAsync(async (req, res) => {
-  if (!req.file) {
-    throw ApiError.badRequest('Audio file is required', 'file_required');
-  }
-
-  const { language } = req.body;
-
-  const audioBuffer = req.file.buffer;
-  const filename = req.file.originalname || 'audio.webm';
-
-  const transcript = await aiService.transcribeAudio(audioBuffer, filename, language || null);
-
-  res.json({ ok: true, data: { transcript } });
-});
-
 const detectUrgency = catchAsync(async (req, res) => {
   const { messages } = req.body;
 
@@ -128,4 +150,4 @@ const detectUrgency = catchAsync(async (req, res) => {
   res.json({ ok: true, data: result });
 });
 
-module.exports = { summarize, smartReplies, translate, transcribe, detectUrgency };
+module.exports = { summarize, smartReplies, translate, detectUrgency };

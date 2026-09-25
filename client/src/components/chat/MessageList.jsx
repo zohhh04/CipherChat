@@ -3,27 +3,42 @@ import MessageBubble from './MessageBubble';
 import { Twemoji } from '../common/EmojiText';
 import { dayLabel } from '../../utils/format';
 
-export default function MessageList({ messages, chat, myId, typingNames, onEditMessage, onDeleteMessage, onReplyMessage, onAddReaction, onRemoveReaction }) {
+export default function MessageList({ messages, chat, myId, typingNames, chatMode = 'normal', searchQuery = '', activeMatchId = null, onEditMessage, onDeleteMessage, onReplyMessage, onAddReaction, onRemoveReaction }) {
   const endRef = useRef(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages.length, typingNames.length]);
 
+  // Jump to the active search match.
+  useEffect(() => {
+    if (activeMatchId) {
+      document.getElementById(`msg-${activeMatchId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [activeMatchId]);
+
   let lastDay = '';
+  const secure = chatMode === 'encrypted';
 
   return (
     <div className="message-list">
-      <div className="e2ee-note"><Twemoji>🔒</Twemoji> Messages are end-to-end encrypted. Only people in this chat can read them.</div>
+      <div className={`mode-banner ${secure ? 'secure' : 'normal'}`}>
+        {secure ? (
+          <><Twemoji>🔐</Twemoji> <strong>SECURE CHAT</strong> — Messages are encrypted on your device and decrypted on the recipient&apos;s device.</>
+        ) : (
+          <><Twemoji>🟢</Twemoji> <strong>NORMAL CHAT</strong> — Messages are not end-to-end encrypted.</>
+        )}
+      </div>
       {messages.map((m) => {
         const day = dayLabel(m.createdAt);
         const showDay = day !== lastDay;
         lastDay = day;
         const replyToMsg = m.replyTo ? messages.find((msg) => msg.id === m.replyTo) : null;
+        const isActiveMatch = activeMatchId && m.id === activeMatchId;
         return (
-          <div key={m.id}>
+          <div key={m.id} id={`msg-${m.id}`} className={isActiveMatch ? 'search-active-match' : undefined}>
             {showDay && <div className="day-divider">{day}</div>}
-            <MessageBubble message={m} chat={chat} myId={myId} onEdit={onEditMessage} onDelete={onDeleteMessage} onReply={onReplyMessage} onAddReaction={onAddReaction} onRemoveReaction={onRemoveReaction} replyToMessage={replyToMsg} />
+            <MessageBubble message={m} chat={chat} myId={myId} highlight={searchQuery} onEdit={onEditMessage} onDelete={onDeleteMessage} onReply={onReplyMessage} onAddReaction={onAddReaction} onRemoveReaction={onRemoveReaction} replyToMessage={replyToMsg} />
           </div>
         );
       })}

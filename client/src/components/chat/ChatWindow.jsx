@@ -3,6 +3,7 @@ import { useChat } from '../../context/ChatContext';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { Twemoji } from '../common/EmojiText';
+import { toast } from '../common/Toast';
 import { usersApi } from '../../api';
 import Sidebar from './Sidebar';
 import ChatHeader from './ChatHeader';
@@ -11,20 +12,21 @@ import MessageInput from './MessageInput';
 import GroupInfoModal from './GroupInfoModal';
 import NewChatModal from './NewChatModal';
 import NewGroupModal from './NewGroupModal';
-import SummaryPanel from './SummaryModal';
+import ChatSearch from './ChatSearch';
 import { useCall } from '../../context/CallContext';
 
 export default function ChatWindow() {
-  const { user, identityReady, publicKey, reUnlock } = useAuth();
-  const { chats, activeChatId, messagesByChat, typingByChat, deleteMessage, editMessage, addReaction, removeReaction } = useChat();
+  const { user, publicKey } = useAuth();
+  const { chats, activeChatId, messagesByChat, typingByChat, deleteMessage, deleteMessageLocal, clearChatHistory, editMessage, addReaction, removeReaction, getChatMode, setChatMode } = useChat();
+  const [clearing, setClearing] = useState(false);
+  const chatMode = activeChatId ? getChatMode(activeChatId) : 'normal';
   const { startCall } = useCall();
   const [infoOpen, setInfoOpen] = useState(false);
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [newGroupOpen, setNewGroupOpen] = useState(false);
-  const [summaryOpen, setSummaryOpen] = useState(false);
-  const [unlockPass, setUnlockPass] = useState('');
-  const [unlockError, setUnlockError] = useState('');
-  const [unlockBusy, setUnlockBusy] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeMatchIdx, setActiveMatchIdx] = useState(0);
   const [editingMessage, setEditingMessage] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
 
@@ -45,15 +47,35 @@ export default function ChatWindow() {
     [activeChatId, typingByChat]
   );
 
-  const handleUnlock = async (e) => {
-    e.preventDefault();
-    if (!unlockPass.trim()) return;
-    setUnlockBusy(true);
-    setUnlockError('');
-    const res = await reUnlock(unlockPass);
-    setUnlockBusy(false);
-    if (!res.ok) setUnlockError(res.message || 'Wrong password');
-    setUnlockPass('');
+  // 🔍 In-chat text search: match ids + active match navigation.
+  const searchMatches = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return messages
+      .filter((m) => !m.deletedAt && m.text && m.text.toLowerCase().includes(q))
+      .map((m) => m.id);
+  }, [messages, searchQuery]);
+
+  useEffect(() => {
+    setSearchQuery('');
+    setActiveMatchIdx(0);
+    setSearchOpen(false);
+  }, [activeChatId]);
+
+  useEffect(() => {
+    setActiveMatchIdx(0);
+  }, [searchQuery]);
+
+  const activeMatchId = searchMatches.length > 0
+    ? searchMatches[((activeMatchIdx % searchMatches.length) + searchMatches.length) % searchMatches.length]
+    : null;
+  const goNextMatch = () => {
+    if (searchMatches.length > 0) setActiveMatchIdx((i) => (i + 1) % searchMatches.length);
+  };
+  const goPrevMatch = () => {
+    if (searchMatches.length > 0) {
+      setActiveMatchIdx((i) => (i - 1 + searchMatches.length) % searchMatches.length);
+    }
   };
 
   const handleEdit = async (message) => {
@@ -62,11 +84,41 @@ export default function ChatWindow() {
 
   const handleDelete = async (messageId) => {
     if (!activeChatId) return;
-    if (!confirm('Delete this message?')) return;
+    const msg = messages.find((m) => String(m.id) === String(messageId));
+    const mine = msg ? String(msg.sender) === String(user.id) : false;
+    if (mine) {
+      if (!confirm('Delete this message for everyone?')) return;
+      try {
+        await deleteMessage(activeChatId, messageId);
+        toast('Message deleted', 'success');
+      } catch (err) {
+        toast(err.message || 'Failed to delete message', 'error');
+      }
+    } else {
+      // Messages you didn't send can only be hidden on this device.
+      if (!confirm('Remove this message from your view only? (Sender keeps it)')) return;
+      deleteMessageLocal(activeChatId, messageId);
+      toast('Removed from your view', 'info');
+    }
+  };
+
+  const handleClearChat = async (chatId) => {
+    const cid = chatId || activeChatId;
+    if (!cid) return;
+    const count = (messagesByChat[String(cid)] || []).filter((m) => !m.deletedAt).length;
+    if (count === 0) {
+      toast('No messages to clear', 'info');
+      return;
+    }
+    if (!confirm(`Clear all ${count} message${count !== 1 ? 's' : ''} in this chat?\n\nThis deletes history for EVERYONE in the chat and cannot be undone.\n\nSingle messages: hover a bubble and press 🗑️.`)) return;
+    setClearing(true);
     try {
-      await deleteMessage(activeChatId, messageId);
+      await clearChatHistory(cid);
+      toast('Chat history cleared', 'success');
     } catch (err) {
-      void 0;
+      toast(err.message || 'Failed to clear chat history', 'error');
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -94,37 +146,6 @@ export default function ChatWindow() {
     setReplyTo(null);
   };
 
-  if (!identityReady) {
-    return (
-      <div className="app-shell">
-        <Sidebar onNewChat={() => setNewChatOpen(true)} onNewGroup={() => setNewGroupOpen(true)} />
-        <main className="chat-main">
-          <div className="empty-state">
-            <div className="lock-art"><Twemoji>🔐</Twemoji></div>
-            <h2>Enter your password</h2>
-            <p>Your encryption keys need to be unlocked</p>
-            <form onSubmit={handleUnlock} style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8, width: 300 }}>
-              <input
-                type="password"
-                className="text-input"
-                placeholder="Password"
-                value={unlockPass}
-                onChange={(e) => setUnlockPass(e.target.value)}
-                autoFocus
-              />
-              {unlockError && <div className="alert error">{unlockError}</div>}
-              <button type="submit" className="btn primary" disabled={unlockBusy || !unlockPass.trim()}>
-                {unlockBusy ? 'Unlocking…' : 'Unlock'}
-              </button>
-            </form>
-          </div>
-        </main>
-        {newChatOpen && <NewChatModal onClose={() => setNewChatOpen(false)} />}
-        {newGroupOpen && <NewGroupModal onClose={() => setNewGroupOpen(false)} />}
-      </div>
-    );
-  }
-
   return (
     <div className={`app-shell ${activeChatId ? 'has-active' : ''}`}>
       <Sidebar
@@ -139,12 +160,29 @@ export default function ChatWindow() {
               typingNames={typingNames}
               onBack={() => window.history.back()}
               onOpenInfo={() => setInfoOpen(true)}
-              onSummary={() => setSummaryOpen(true)}
+              onSearchToggle={() => setSearchOpen((s) => !s)}
+              searchOpen={searchOpen}
+              chatMode={chatMode}
+              onModeChange={(mode) => setChatMode(activeChatId, mode)}
+              onClearChat={() => handleClearChat()}
+              clearing={clearing}
+              messageCount={messages.filter((m) => !m.deletedAt).length}
               onCall={(mediaType, peerId, peerName) => {
                 startCall(peerId, peerName, mediaType).catch(() => {});
               }}
             />
-            <MessageList messages={messages} chat={chat} myId={user.id} typingNames={typingNames} onEditMessage={handleEdit} onDeleteMessage={handleDelete} onReplyMessage={handleReply} onAddReaction={handleAddReaction} onRemoveReaction={handleRemoveReaction} />
+            {searchOpen && (
+              <ChatSearch
+                query={searchQuery}
+                onQuery={setSearchQuery}
+                matchCount={searchMatches.length}
+                activeIndex={searchMatches.length > 0 ? (((activeMatchIdx % searchMatches.length) + searchMatches.length) % searchMatches.length) : 0}
+                onPrev={goPrevMatch}
+                onNext={goNextMatch}
+                onClose={() => { setSearchOpen(false); setSearchQuery(''); }}
+              />
+            )}
+            <MessageList messages={messages} chat={chat} myId={user.id} typingNames={typingNames} chatMode={chatMode} searchQuery={searchOpen ? searchQuery : ''} activeMatchId={activeMatchId} onEditMessage={handleEdit} onDeleteMessage={handleDelete} onReplyMessage={handleReply} onAddReaction={handleAddReaction} onRemoveReaction={handleRemoveReaction} />
             <MessageInput
               chatId={activeChatId}
               editingMessage={editingMessage}
@@ -152,6 +190,7 @@ export default function ChatWindow() {
               onEditCancel={() => setEditingMessage(null)}
               replyTo={replyTo}
               onReplyCancel={() => setReplyTo(null)}
+              chatMode={chatMode}
             />
             {infoOpen && <GroupInfoModal chat={chat} onClose={() => setInfoOpen(false)} />}
           </>
@@ -164,7 +203,6 @@ export default function ChatWindow() {
           </div>
         )}
       </main>
-      {summaryOpen && <SummaryPanel chatId={activeChatId} onClose={() => setSummaryOpen(false)} />}
       {newChatOpen && <NewChatModal onClose={() => setNewChatOpen(false)} />}
       {newGroupOpen && <NewGroupModal onClose={() => setNewGroupOpen(false)} />}
     </div>

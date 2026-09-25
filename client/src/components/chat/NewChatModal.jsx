@@ -77,7 +77,7 @@ export default function NewChatModal({ onClose }) {
         <div className="user-results">
           {results.map((u) => (
             <button key={String(u._id)} type="button" className="chat-item" onClick={() => pick(u)}>
-              <Avatar id={String(u._id)} name={u.username} size={40} />
+              <Avatar id={String(u._id)} name={u.username} size={40} avatar={u.avatar || ''} />
               <div className="chat-item-main">
                 <span className="chat-name">{u.username}</span>
                 {u.about && <span className="chat-preview">{u.about}</span>}
@@ -92,7 +92,7 @@ export default function NewChatModal({ onClose }) {
       )}
       {selected && (
         <div className="selected-user-preview">
-          <Avatar id={String(selected._id)} name={selected.username} size={40} />
+          <Avatar id={String(selected._id)} name={selected.username} size={40} avatar={selected.avatar || ''} />
           <span className="chat-name">{selected.username}</span>
         </div>
       )}

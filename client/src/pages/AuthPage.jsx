@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { authApi, apiError } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { Twemoji } from '../components/common/EmojiText';
+import PasswordInput from '../components/common/PasswordInput';
 import { toast } from '../components/common/Toast';
 
 export default function AuthPage({ mode }) {
@@ -16,6 +17,8 @@ export default function AuthPage({ mode }) {
   const [info, setInfo] = useState(mode === 'verify-email' ? 'Verifying…' : '');
   const [done, setDone] = useState(false);
   const [devToken, setDevToken] = useState('');
+  const [resendEmail, setResendEmail] = useState('');
+  const [resending, setResending] = useState(false);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -35,6 +38,21 @@ export default function AuthPage({ mode }) {
       .catch((err) => setInfo(apiError(err).message));
   }, [mode, params]);
 
+  const resendLink = async () => {
+    const target = resendEmail || form.email;
+    if (!target) return;
+    setResending(true);
+    try {
+      await authApi.resendVerification(target);
+      setInfo('If that account is unverified, a new link has been sent. Check your inbox (and spam folder).');
+      setError('');
+    } catch (err) {
+      setError(apiError(err).message);
+    } finally {
+      setResending(false);
+    }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     setError('');
@@ -44,10 +62,17 @@ export default function AuthPage({ mode }) {
         const res = await login(form.email, form.password);
         if (!res.ok) {
           setError(res.message);
-          if (res.code === 'email_unverified') setError('Please verify your email first. Check your inbox.');
+          if (res.code === 'email_unverified') {
+            setError('Please verify your email first. Check your inbox (and spam folder).');
+            setResendEmail(form.email);
+          }
           return;
         }
-        toast('Welcome back!', 'success');
+        if (res.keyRotated) {
+          toast('Welcome back! Your encryption identity was refreshed after your password change.', 'info');
+        } else {
+          toast('Welcome back!', 'success');
+        }
         navigate('/app');
       } else if (mode === 'register') {
         if (form.password !== form.confirm) {
@@ -62,6 +87,9 @@ export default function AuthPage({ mode }) {
         if (res.data?.devVerifyToken) {
           await authApi.verifyEmail(res.data.devVerifyToken);
           setInfo('Account created & verified (dev mode). You can sign in now.');
+        } else if (res.data?.verificationEmailSent === false) {
+          setInfo('Account created, but the verification email could not be sent. Check the address, then request a new link below.');
+          setResendEmail(form.email);
         } else {
           setInfo('Account created. Check your email for a verification link.');
         }
@@ -136,6 +164,11 @@ export default function AuthPage({ mode }) {
           </div>
         )}
         {error && <div className="alert error">{error}</div>}
+        {resendEmail && (
+          <button type="button" className="btn sm block" onClick={resendLink} disabled={resending} style={{ marginTop: 8 }}>
+            {resending ? 'Sending…' : 'Resend verification email'}
+          </button>
+        )}
 
         {(mode === 'verify-email' || done) && (
           <Link className="btn primary block" to="/login">
@@ -152,9 +185,7 @@ export default function AuthPage({ mode }) {
               <input className="text-input" type="email" placeholder="Email" value={form.email} onChange={set('email')} required autoComplete="email" />
             )}
             {mode !== 'forgot' && (
-              <input
-                className="text-input"
-                type="password"
+              <PasswordInput
                 placeholder={mode === 'reset' ? 'New password (min 10 chars)' : 'Password'}
                 value={form.password}
                 onChange={set('password')}
@@ -164,7 +195,7 @@ export default function AuthPage({ mode }) {
               />
             )}
             {(mode === 'register' || mode === 'reset') && (
-              <input className="text-input" type="password" placeholder="Confirm password" value={form.confirm} onChange={set('confirm')} required minLength={10} />
+              <PasswordInput placeholder="Confirm password" value={form.confirm} onChange={set('confirm')} required minLength={10} autoComplete="new-password" />
             )}
 
             <button className="btn primary block" type="submit" disabled={busy}>

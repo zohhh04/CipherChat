@@ -37,7 +37,24 @@ function createTransporter() {
 
 transporter = createTransporter();
 
+function shouldSkipMailSend(to) {
+  const email = String(to || '').trim().toLowerCase();
+  return config.isTest || !config.smtp.host || email.endsWith('@test.dev');
+}
+
 async function sendMail({ to, subject, html, text }) {
+  if (shouldSkipMailSend(to)) {
+    logger.warn({ to, subject }, 'SMTP disabled for test/dev address - email not sent');
+    logger.info('\n╔══════════════════════════════════════════╗');
+    logger.info('║         EMAIL (test/dev mode)            ║');
+    logger.info('╠══════════════════════════════════════════╣');
+    logger.info(`  To:      ${to}`);
+    logger.info(`  Subject: ${subject}`);
+    logger.info(`  Body:    ${text}`);
+    logger.info('╚══════════════════════════════════════════╝\n');
+    return { delivered: false, skipped: true };
+  }
+
   if (!transporter) {
     logger.warn({ to, subject }, 'SMTP not configured - email not sent');
     logger.info('\n╔══════════════════════════════════════════╗');

@@ -14,9 +14,9 @@ All responses are shaped `{ ok: boolean, data?: …, code?, message?, details? }
 
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
-| POST | `/register` | `{username, email, password}` | Sends verification email. Non-prod without SMTP also returns `devVerifyToken`. |
+| POST | `/register` | `{username, email, password}` | Sends verification email (registration never fails on mail errors). Returns `verificationEmailSent`; non-prod without delivery also returns `devVerifyToken`. |
 | POST | `/verify-email` | `{token}` | Marks the account verified. |
-| POST | `/resend-verification` | – | Requires access token. |
+| POST | `/resend-verification` | `{email?}` (or access token) | Always 200; resends the link if the account is unverified. Mail failures never error. |
 | POST | `/login` | `{email, password}` | Returns `{accessToken, user}` + sets refresh cookie. Blocked until verified when `EMAIL_VERIFICATION_REQUIRED=true`. |
 | POST | `/refresh` | – (cookie) | Rotates cookie, returns new `{accessToken, user}`. |
 | POST | `/logout` | – (cookie) | Revokes that session. |

@@ -35,6 +35,7 @@ const userSchema = new mongoose.Schema(
     },
 
     about: { type: String, default: '', maxlength: 140 },
+    avatar: { type: String, default: '' },
     theme: { type: String, enum: ['light', 'dark'], default: 'dark' },
     lastSeenAt: { type: Date, default: Date.now },
   },
@@ -59,6 +60,7 @@ userSchema.methods.toMeJSON = function () {
     role: this.role,
     isVerified: this.isVerified,
     about: this.about,
+    avatar: this.avatar || '',
     theme: this.theme,
     hasKeyBackup: Boolean(this.keyBackup && this.keyBackup.blob),
     createdAt: this.createdAt,

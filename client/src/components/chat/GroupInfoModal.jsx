@@ -142,7 +142,7 @@ export default function GroupInfoModal({ chat, onClose }) {
           <div className="user-results">
             {results.map((u) => (
               <button key={String(u._id)} type="button" className="chat-item" disabled={busy} onClick={() => onAdd(u._id)}>
-                <Avatar id={String(u._id)} name={u.username} size={36} />
+                <Avatar id={String(u._id)} name={u.username} size={36} avatar={u.avatar || ''} />
                 <span className="chat-name">{u.username}</span>
               </button>
             ))}
@@ -155,7 +155,7 @@ export default function GroupInfoModal({ chat, onClose }) {
       <div className="member-list">
         {liveChat.members.map((m) => (
           <div key={String(m.id)} className="member-row">
-            <Avatar id={String(m.id)} name={m.username} size={36} online={onlineIds.has(String(m.id))} />
+            <Avatar id={String(m.id)} name={m.username} size={36} avatar={m.avatar || ''} online={onlineIds.has(String(m.id))} />
             <span className="member-name">
               {m.username}
               {m.id === user.id ? ' (you)' : ''}

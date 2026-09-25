@@ -1,6 +1,7 @@
 const ROLES = { USER: 'user', ADMIN: 'admin' };
 const CHAT_TYPES = { DIRECT: 'direct', GROUP: 'group' };
 const MESSAGE_TYPES = ['text', 'image', 'video', 'audio', 'file', 'system'];
+const CHAT_MODES = { NORMAL: 'normal', ENCRYPTED: 'encrypted' };
 const NOTIFICATION_TYPES = { MESSAGE: 'message', GROUP: 'group', CALL: 'call', SYSTEM: 'system' };
 const TOKEN_TYPES = { VERIFY: 'verify', RESET: 'reset' };
 
@@ -20,4 +21,4 @@ const AUDIT_ACTIONS = {
   ROLE_CHANGED: 'admin.user.role_changed',
 };
 
-module.exports = { ROLES, CHAT_TYPES, MESSAGE_TYPES, NOTIFICATION_TYPES, TOKEN_TYPES, AUDIT_ACTIONS };
+module.exports = { ROLES, CHAT_TYPES, MESSAGE_TYPES, CHAT_MODES, NOTIFICATION_TYPES, TOKEN_TYPES, AUDIT_ACTIONS };

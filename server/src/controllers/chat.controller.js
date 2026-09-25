@@ -8,7 +8,7 @@ const catchAsync = require('../utils/catchAsync');
 const { CHAT_TYPES, NOTIFICATION_TYPES } = require('../utils/constants');
 const { audit } = require('../services/audit.service');
 
-const MEMBER_POPULATE = 'username about theme';
+const MEMBER_POPULATE = 'username about theme avatar';
 
 function emitTo(req, event, payload) {
   const io = req.app.get('io');
@@ -19,7 +19,7 @@ const listMyChats = catchAsync(async (req, res) => {
   const chats = await Chat.find({ 'members.user': req.user._id })
     .sort('-lastActivity')
     .populate('members.user', MEMBER_POPULATE)
-    .populate('lastMessage', 'sender type createdAt iv ciphertext deletedAt')
+    .populate('lastMessage', 'sender type mode text createdAt iv ciphertext deletedAt')
     .populate('groupInfo', 'name description avatar');
 
   const data = await Promise.all(
@@ -37,6 +37,7 @@ const listMyChats = catchAsync(async (req, res) => {
           id: m.user._id,
           username: m.user.username,
           about: m.user.about,
+          avatar: m.user.avatar || '',
           isAdmin: m.isAdmin,
           joinedAt: m.joinedAt,
         })),
@@ -48,6 +49,8 @@ const listMyChats = catchAsync(async (req, res) => {
               id: c.lastMessage._id,
               sender: c.lastMessage.sender,
               type: c.lastMessage.type,
+              mode: c.lastMessage.mode === 'normal' ? 'normal' : 'encrypted',
+              text: c.lastMessage.mode === 'normal' ? (c.lastMessage.text || '') : '',
               iv: c.lastMessage.iv,
               ciphertext: c.lastMessage.ciphertext,
               deletedAt: c.lastMessage.deletedAt,
@@ -161,6 +164,7 @@ const getChat = catchAsync(async (req, res) => {
         id: m.user._id,
         username: m.user.username,
         about: m.user.about,
+        avatar: m.user.avatar || '',
         isAdmin: m.isAdmin,
       })),
       groupInfo: chat.groupInfo,

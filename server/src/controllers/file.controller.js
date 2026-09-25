@@ -37,6 +37,14 @@ const meta = catchAsync(async (req, res) => {
 const download = catchAsync(async (req, res) => {
   const file = await assertAccess(req);
 
+  // If this file belonged to a view-once photo that was already opened,
+  // refuse the download even if the bytes somehow still exist on disk.
+  const Message = require('../models/Message');
+  const burned = await Message.findOne({ file: file._id, viewOnce: true, viewedAt: { $ne: null } })
+    .select('_id')
+    .lean();
+  if (burned) throw ApiError.notFound('This photo was already viewed once', 'view_once_expired');
+
   const filePath = path.join(require('../middleware/upload.middleware').uploadDir, file.storagePath);
   if (!fs.existsSync(filePath)) throw ApiError.notFound('File content missing', 'file_gone');
 
@@ -48,7 +56,7 @@ const download = catchAsync(async (req, res) => {
 });
 
 async function assertAccess(req) {
-  const file = await File.findById(req.params.id);
+  const file = await File.findById(req.params.fid);
   if (!file) throw ApiError.notFound('File not found', 'file_not_found');
   const chat = await Chat.findById(file.chat);
   if (!chat || !chat.isMember(req.user._id)) {

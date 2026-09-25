@@ -11,15 +11,38 @@ import {
   exportRawKeyB64,
   importRawChatKey,
   fromB64,
+  toB64,
+  hasPrivateKey,
 } from '../crypto/e2ee';
+import {
+  encryptTextWithPassword,
+  decryptTextWithPassword,
+  encryptBytesWithPassword,
+  decryptBytesWithPassword,
+  packIv,
+  unpackIv,
+  getSecureKey,
+} from '../crypto/securePass';
+
+const CHAT_MODE_KEY = 'cipherchat.chatModes.v1';
+const DEFAULT_CHAT_MODE = 'normal'; // 🟢 Normal is the default mode
+
+function loadModeMap() {
+  try {
+    return JSON.parse(localStorage.getItem(CHAT_MODE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
 
 const ChatContext = createContext(null);
 
 export function ChatProvider({ children }) {
-  const { user, identityReady } = useAuth();
+  const { user } = useAuth();
   const { subscribe, emit } = useSocket();
 
   const [chats, setChats] = useState({});
+  const [modeByChat, setModeByChat] = useState(loadModeMap);
   const [activeChatId, setActiveChatId] = useState(null);
   const [messagesByChat, setMessagesByChat] = useState({});
   const [typingByChat, setTypingByChat] = useState({});
@@ -29,6 +52,9 @@ export function ChatProvider({ children }) {
 
   const chatKeysRef = useRef(new Map());
   const pubKeysRef = useRef(new Map());
+  // Session-only cache of successfully entered Secure keys, per chat.
+  // Never persisted — receiver types the sender's key "then and there".
+  const securePassCacheRef = useRef(new Map());
   const activeChatRef = useRef(null);
   activeChatRef.current = activeChatId;
   const chatsRef = useRef({});
@@ -45,6 +71,25 @@ export function ChatProvider({ children }) {
   };
 
   const getPeerIds = useCallback((chat) => chat.members.map((m) => String(m.id)), []);
+
+  // 🟢 normal (plaintext) is default | 🔐 encrypted (E2EE). Mode is per-chat, per-message.
+  const getChatMode = useCallback(
+    (chatId) => modeByChat[String(chatId)] || DEFAULT_CHAT_MODE,
+    [modeByChat]
+  );
+
+  const setChatMode = useCallback((chatId, mode) => {
+    const next = mode === 'encrypted' ? 'encrypted' : 'normal';
+    setModeByChat((prev) => {
+      const updated = { ...prev, [String(chatId)]: next };
+      try {
+        localStorage.setItem(CHAT_MODE_KEY, JSON.stringify(updated));
+      } catch {
+        // storage optional
+      }
+      return updated;
+    });
+  }, []);
 
   const getPublicKeyFor = useCallback(async (userId) => {
     if (pubKeysRef.current.has(userId)) return pubKeysRef.current.get(userId);
@@ -86,33 +131,233 @@ export function ChatProvider({ children }) {
     [ensureChatKey]
   );
 
+  // Try to decrypt a password-encrypted outer payload with a given password.
+  // Returns parsed content object or null.
+  const tryPassDecrypt = useCallback(async (ivPacked, ciphertext, password) => {
+    try {
+      const parts = unpackIv(ivPacked);
+      if (!parts) return null;
+      const plain = await decryptTextWithPassword(
+        { salt: parts.salt, iv: parts.iv, ciphertext },
+        password
+      );
+      return JSON.parse(plain);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const buildLockedSecure = useCallback((base, m) => {
+    const preview = String(m.ciphertext || '').slice(0, 160);
+    return {
+      ...base,
+      viewOnce: m.viewOnce === true,
+      viewedAt: m.viewedAt || null,
+      expired: false,
+      text: '',
+      file: null,
+      locked: true,
+      lockPreview: preview,
+      lockIv: m.iv || '',
+      lockCiphertext: m.ciphertext || '',
+      lockFileId: m.fileId ? String(m.fileId) : null,
+    };
+  }, []);
+
+  const contentToMessage = useCallback((base, m, content) => {
+    const viewOnce = m.viewOnce === true || content.o === true;
+    const expired = viewOnce && !!m.viewedAt;
+    let file = null;
+    if (!expired && content.t === 'file') {
+      if (content.pass) {
+        // Password-encrypted file: bytes on server are AES-GCM with the shared key.
+        file = {
+          fileId: content.f,
+          securePass: true,
+          fs: content.fs,
+          fv: content.fv,
+          nmSalt: content.ns,
+          nmIv: content.nv,
+          nmCt: content.nc,
+          name: content.n,
+          mime: content.m,
+          size: content.s,
+          duration: content.d,
+          viewOnce,
+        };
+      } else {
+        file = { fileId: content.f, key: content.k, iv: content.v, name: content.n, mime: content.m, size: content.s, duration: content.d, viewOnce };
+      }
+    }
+    return {
+      ...base,
+      viewOnce,
+      viewedAt: m.viewedAt || null,
+      expired,
+      text: expired ? '' : (content.t === 'text' ? content.x : ''),
+      file,
+      locked: false,
+    };
+  }, []);
+
   const normalizeMessage = useCallback(
     async (chat, m) => {
-      const content = m.deletedAt ? null : await decryptContent(chat, m.iv, m.ciphertext);
       const reactions = {};
       if (m.reactions && typeof m.reactions === 'object') {
         for (const [emoji, users] of Object.entries(m.reactions)) {
           reactions[emoji] = users.map(String);
         }
       }
-      return {
-        id: String(m.id),
+      const base = {
+        id: String(m.id ?? m._id),
         sender: String(m.sender),
-        type: m.type,
+        type: m.type || 'text',
+        mode: m.mode === 'normal' ? 'normal' : 'encrypted',
         deletedAt: m.deletedAt || null,
         editedAt: m.editedAt || null,
         createdAt: m.createdAt,
         deliveredTo: (m.deliveredTo || []).map(String),
         readBy: (m.readBy || []).map(String),
         reactions,
-        text: content && content.t === 'text' ? content.x : '',
-        file:
-          content && content.t === 'file'
-            ? { fileId: content.f, key: content.k, iv: content.v, name: content.n, mime: content.m, size: content.s, duration: content.d }
-            : null,
+        viewedAt: m.viewedAt || null,
+        viewedBy: (m.viewedBy || []).map(String),
       };
+      // 🟢 Normal: plaintext straight from server, no keys needed.
+      if (base.mode === 'normal') {
+        const viewOnce = false; // view-once is a Secure-mode feature
+        const expired = !!m.deletedAt;
+        if (base.type !== 'text') {
+          let meta = {};
+          try {
+            meta = JSON.parse(m.text || '{}');
+          } catch {
+            meta = {};
+          }
+          return {
+            ...base,
+            viewOnce,
+            expired,
+            text: '',
+            file: expired || !m.fileId
+              ? null
+              : {
+                  fileId: String(m.fileId || m.file),
+                  name: meta.n || 'attachment',
+                  mime: meta.m || '',
+                  size: meta.s || 0,
+                  duration: meta.d,
+                  plain: true,
+                },
+          };
+        }
+        return { ...base, viewOnce, expired, text: expired ? '' : (m.text || ''), file: null };
+      }
+      // 🔐 Secure: receiver sees ENCRYPTED content until they enter the sender's key.
+      if (m.deletedAt) {
+        return { ...base, viewOnce: false, expired: false, text: '', file: null, locked: false };
+      }
+      if (!m.iv || !m.ciphertext) {
+        return { ...base, viewOnce: false, expired: false, text: '', file: null, decryptError: true, locked: false };
+      }
+      const chatId = String(chat.id);
+      const passParts = unpackIv(m.iv);
+      if (passParts) {
+        // New shared-key format: try session-cached key, then my own saved Secure key
+        // (so the sender auto-sees plaintext after reload). Receivers stay locked.
+        const cached = securePassCacheRef.current.get(chatId);
+        const myKey = getSecureKey(user && user.id);
+        const candidates = [cached, myKey].filter(Boolean);
+        for (const pw of candidates) {
+          const content = await tryPassDecrypt(m.iv, m.ciphertext, pw);
+          if (content) {
+            if (cached !== pw) securePassCacheRef.current.set(chatId, pw);
+            return contentToMessage(base, m, content);
+          }
+        }
+        return buildLockedSecure(base, m);
+      }
+      // Legacy E2EE format (pre-shared-key): try old chat key if unlocked, else old error UI.
+      const content = await decryptContent(chat, m.iv, m.ciphertext);
+      if (!content) {
+        return { ...base, viewOnce: false, expired: false, text: '', file: null, decryptError: true, locked: false };
+      }
+      return contentToMessage(base, m, content);
     },
-    [decryptContent]
+    [decryptContent, tryPassDecrypt, contentToMessage, buildLockedSecure, user]
+  );
+
+  // Receiver enters the sender's Secure key "then and there" to view one message.
+  // On success the key is cached for this chat session so other messages open too.
+  const unlockSecureMessage = useCallback(
+    async (chatId, messageId, password) => {
+      const cid = String(chatId);
+      const chat = chatsRef.current[cid] || chats[cid];
+      if (!chat) throw new Error('Chat not loaded');
+      const list = messagesByChat[cid] || [];
+      const msg = list.find((x) => String(x.id) === String(messageId));
+      if (!msg) throw new Error('Message not found');
+      const ivPacked = msg.lockIv || msg.iv;
+      const ct = msg.lockCiphertext || msg.ciphertext;
+      if (!ivPacked || !ct) throw new Error('Encrypted payload missing');
+      const content = await tryPassDecrypt(ivPacked, ct, password);
+      if (!content) throw new Error('Wrong key — could not decrypt this message');
+      securePassCacheRef.current.set(cid, password);
+      const base = { ...msg };
+      const unlocked = contentToMessage(
+        base,
+        { viewOnce: msg.viewOnce, viewedAt: msg.viewedAt, fileId: msg.lockFileId },
+        content
+      );
+      // Preserve server fields + raw payload for re-render/file decrypt.
+      const next = {
+        ...msg,
+        ...unlocked,
+        locked: false,
+        decryptError: false,
+        lockIv: ivPacked,
+        lockCiphertext: ct,
+      };
+      setMessagesByChat((prev) => ({
+        ...prev,
+        [cid]: (prev[cid] || []).map((x) => (String(x.id) === String(messageId) ? next : x)),
+      }));
+      // Auto-open any other locked messages in this chat that this key unlocks.
+      (async () => {
+        try {
+          const current = messagesByChat[cid] || [];
+          const toUnlock = [];
+          for (const x of current) {
+            if (!x.locked || String(x.id) === String(messageId)) continue;
+            const c2 = await tryPassDecrypt(x.lockIv || x.iv, x.lockCiphertext || x.ciphertext, password);
+            if (c2) toUnlock.push({ x, c2 });
+          }
+          if (toUnlock.length > 0) {
+            setMessagesByChat((prev) => ({
+              ...prev,
+              [cid]: (prev[cid] || []).map((x) => {
+                const hit = toUnlock.find((t) => String(t.x.id) === String(x.id));
+                if (!hit) return x;
+                const u2 = contentToMessage(
+                  { ...x },
+                  { viewOnce: x.viewOnce, viewedAt: x.viewedAt, fileId: x.lockFileId },
+                  hit.c2
+                );
+                return { ...x, ...u2, locked: false, decryptError: false };
+              }),
+            }));
+          }
+        } catch {
+          // best-effort
+        }
+      })();
+      return { ok: true };
+    },
+    [chats, messagesByChat, tryPassDecrypt, contentToMessage]
+  );
+
+  const getChatPasscode = useCallback(
+    (chatId) => securePassCacheRef.current.get(String(chatId)) || getSecureKey(user && user.id) || '',
+    [user]
   );
 
   const refreshChats = useCallback(async () => {
@@ -134,9 +379,9 @@ export function ChatProvider({ children }) {
   }, [chats]);
 
   useEffect(() => {
-    if (!identityReady) return;
+    if (!user) return;
     refreshChats().catch(() => setLoadingChats(false));
-  }, [identityReady, refreshChats]);
+  }, [user, refreshChats]);
 
   const loadMessages = useCallback(
     async (chatId) => {
@@ -180,73 +425,240 @@ export function ChatProvider({ children }) {
   );
 
   const sendText = useCallback(
-    async (chatId, text, replyToId) => {
+    async (chatId, text, replyToId, opts = {}) => {
       const chat = chats[String(chatId)];
       if (!chat) throw new Error('Chat not loaded');
-      const key = await ensureChatKey(chat);
-      const payload = await encryptWithKey(key, JSON.stringify({ t: 'text', x: text }));
-      const message = await messagesApi.send(chatId, {
+      const mode = opts.mode || modeByChat[String(chatId)] || DEFAULT_CHAT_MODE;
+
+      const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const optimistic = {
+        id: tempId,
+        sender: user.id,
         type: 'text',
-        iv: payload.iv,
-        ciphertext: payload.ciphertext,
-        ...(replyToId ? { replyTo: replyToId } : {}),
-      });
-      const normalized = await normalizeMessage(chat, { ...message, sender: user.id, deliveredTo: [user.id], readBy: [user.id] });
-      setMessagesByChat((prev) => ({ ...prev, [String(chatId)]: [...(prev[String(chatId)] || []), normalized] }));
+        mode,
+        text,
+        file: null,
+        deletedAt: null,
+        editedAt: null,
+        createdAt: new Date().toISOString(),
+        deliveredTo: [user.id],
+        readBy: [user.id],
+        reactions: {},
+      };
+      setMessagesByChat((prev) => ({ ...prev, [String(chatId)]: [...(prev[String(chatId)] || []), optimistic] }));
       setChats((prev) => ({ ...prev, [String(chatId)]: { ...prev[String(chatId)], lastActivity: new Date().toISOString() } }));
-      return normalized;
+
+      try {
+        let body;
+        if (mode === 'normal') {
+          // 🟢 Normal: plaintext straight to server/MongoDB, no encryption.
+          body = {
+            mode: 'normal',
+            type: 'text',
+            text,
+            ...(replyToId ? { replyTo: replyToId } : {}),
+          };
+        } else {
+          // 🔐 Secure: encrypt with the sender's Settings key. Receiver sees
+          // ciphertext and types the same key "then and there" to view it.
+          const pass = getSecureKey(user.id) || securePassCacheRef.current.get(String(chatId));
+          if (!pass) {
+            throw new Error('Set your 🔐 Secure Chat Key in Settings first, then send.');
+          }
+          const payload = await encryptTextWithPassword(JSON.stringify({ t: 'text', x: text }), pass);
+          securePassCacheRef.current.set(String(chatId), pass);
+          body = {
+            mode: 'encrypted',
+            type: 'text',
+            iv: packIv(payload.salt, payload.iv),
+            ciphertext: payload.ciphertext,
+            ...(replyToId ? { replyTo: replyToId } : {}),
+          };
+        }
+        const message = await messagesApi.send(chatId, body);
+        setMessagesByChat((prev) => ({
+          ...prev,
+          [String(chatId)]: (prev[String(chatId)] || []).map((m) =>
+            m.id === tempId
+              ? { ...m, id: String(message.id || message._id), mode: message.mode || mode, createdAt: message.createdAt }
+              : m
+          ),
+        }));
+        return message;
+      } catch (err) {
+        setMessagesByChat((prev) => ({
+          ...prev,
+          [String(chatId)]: (prev[String(chatId)] || []).filter((m) => m.id !== tempId),
+        }));
+        throw err;
+      }
     },
-    [chats, ensureChatKey, normalizeMessage, user]
+    [chats, user, modeByChat]
   );
 
   const sendFile = useCallback(
-    async (chatId, file, kind, durationSec, onProgress) => {
+    async (chatId, file, kind, durationSec, onProgress, opts = {}) => {
       const chat = chats[String(chatId)];
       if (!chat) throw new Error('Chat not loaded');
+      const mode = opts.mode || modeByChat[String(chatId)] || DEFAULT_CHAT_MODE;
 
-      const fileKey = await generateChatKey();
-      const rawKey = await exportRawKeyB64(fileKey);
+      // One-time view: images only + Secure mode only.
+      const isImage = (file.type || '').startsWith('image/');
+      const viewOnce = opts.viewOnce === true && isImage && kind === 'image';
+      if (opts.viewOnce === true && !viewOnce) {
+        throw new Error('One-time view is available for photos only');
+      }
+      if (viewOnce && mode === 'normal') {
+        throw new Error('View-once needs 🔐 Secure mode. Switch modes first.');
+      }
+
+      // 🟢 Normal: upload raw bytes, plaintext filename meta — no encryption at all.
+      if (mode === 'normal' && !viewOnce) {
+        const mime = kind === 'audio' ? (file.type || 'audio/webm') : (file.type || 'application/octet-stream');
+        const meta = { n: file.name || 'attachment', m: mime, s: file.size };
+        if (durationSec) meta.d = durationSec;
+        const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const optimistic = {
+          id: tempId,
+          sender: user.id,
+          type: kind,
+          mode: 'normal',
+          text: '',
+          file: { fileId: '', name: meta.n, mime: meta.m, size: meta.s, duration: durationSec || undefined, plain: true },
+          viewOnce: false,
+          viewedAt: null,
+          expired: false,
+          deletedAt: null,
+          editedAt: null,
+          createdAt: new Date().toISOString(),
+          deliveredTo: [user.id],
+          readBy: [user.id],
+          reactions: {},
+        };
+        setMessagesByChat((prev) => ({ ...prev, [String(chatId)]: [...(prev[String(chatId)] || []), optimistic] }));
+        try {
+          const arrayBuf = await file.arrayBuffer();
+          const nameB64 = toB64(new TextEncoder().encode(file.name || 'attachment'));
+          const fileId = await filesApi.upload(chatId, arrayBuf, '', nameB64, mime, onProgress);
+          const message = await messagesApi.send(chatId, {
+            mode: 'normal',
+            type: kind,
+            text: JSON.stringify(meta),
+            fileId: String(fileId),
+          });
+          setMessagesByChat((prev) => ({
+            ...prev,
+            [String(chatId)]: (prev[String(chatId)] || []).map((m) =>
+              m.id === tempId
+                ? { ...m, id: String(message.id || message._id), file: { ...m.file, fileId: String(fileId) }, createdAt: message.createdAt }
+                : m
+            ),
+          }));
+          return message;
+        } catch (err) {
+          setMessagesByChat((prev) => ({
+            ...prev,
+            [String(chatId)]: (prev[String(chatId)] || []).filter((m) => m.id !== tempId),
+          }));
+          throw err;
+        }
+      }
+
+      // 🔐 Secure: file bytes + outer message both encrypted with sender's Settings key.
+      const pass = getSecureKey(user.id) || securePassCacheRef.current.get(String(chatId));
+      if (!pass) {
+        throw new Error('Set your 🔐 Secure Chat Key in Settings first, then send.');
+      }
+      securePassCacheRef.current.set(String(chatId), pass);
 
       const arrayBuf = await file.arrayBuffer();
       const plainBytes = new Uint8Array(arrayBuf);
-      const payload = await encryptWithKey(fileKey, plainBytes);
-      const namePayload = await encryptWithKey(fileKey, file.name || 'attachment');
+      const payload = await encryptBytesWithPassword(plainBytes, pass);
+      const namePayload = await encryptTextWithPassword(file.name || 'attachment', pass);
 
-      const encryptedBytes = fromB64(payload.ciphertext);
-      const fileId = await filesApi.upload(
-        chatId,
-        encryptedBytes.buffer,
-        namePayload.iv,
-        namePayload.ciphertext,
-        kind === 'audio' ? (file.type || 'audio/webm') : (file.type || ''),
-        onProgress
-      );
-
-      const msgKey = await ensureChatKey(chat);
-      const meta = {
-        t: 'file',
-        f: String(fileId),
-        k: rawKey,
-        v: payload.iv,
-        n: file.name || 'attachment',
-        m: kind === 'audio' ? (file.type || 'audio/webm') : (file.type || 'application/octet-stream'),
-        s: file.size,
-      };
-      if (durationSec) meta.d = durationSec;
-
-      const content = await encryptWithKey(msgKey, JSON.stringify(meta));
-
-      const message = await messagesApi.send(chatId, {
+      const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const optimistic = {
+        id: tempId,
+        sender: user.id,
         type: kind,
-        iv: content.iv,
-        ciphertext: content.ciphertext,
-        fileId: String(fileId),
-      });
-      const normalized = await normalizeMessage(chat, { ...message, sender: user.id, deliveredTo: [user.id], readBy: [user.id] });
-      setMessagesByChat((prev) => ({ ...prev, [String(chatId)]: [...(prev[String(chatId)] || []), normalized] }));
-      return normalized;
+        mode: 'encrypted',
+        text: '',
+        file: { fileId: '', securePass: true, fs: payload.salt, fv: payload.iv, name: file.name || 'attachment', mime: file.type || 'application/octet-stream', size: file.size, duration: durationSec || undefined, viewOnce },
+        viewOnce,
+        viewedAt: null,
+        expired: false,
+        locked: false,
+        deletedAt: null,
+        editedAt: null,
+        createdAt: new Date().toISOString(),
+        deliveredTo: [user.id],
+        readBy: [user.id],
+        reactions: {},
+      };
+      setMessagesByChat((prev) => ({ ...prev, [String(chatId)]: [...(prev[String(chatId)] || []), optimistic] }));
+
+      try {
+        const encryptedBytes = fromB64(payload.ciphertext);
+        const fileId = await filesApi.upload(
+          chatId,
+          encryptedBytes.buffer,
+          namePayload.iv,
+          namePayload.ciphertext,
+          kind === 'audio' ? (file.type || 'audio/webm') : (file.type || ''),
+          onProgress
+        );
+
+        const meta = {
+          t: 'file',
+          f: String(fileId),
+          pass: true,
+          fs: payload.salt,
+          fv: payload.iv,
+          ns: namePayload.salt,
+          nv: namePayload.iv,
+          nc: namePayload.ciphertext,
+          n: file.name || 'attachment',
+          m: kind === 'audio' ? (file.type || 'audio/webm') : (file.type || 'application/octet-stream'),
+          s: file.size,
+        };
+        if (durationSec) meta.d = durationSec;
+        if (viewOnce) meta.o = true;
+
+        const content = await encryptTextWithPassword(JSON.stringify(meta), pass);
+
+        const message = await messagesApi.send(chatId, {
+          mode: 'encrypted',
+          type: kind,
+          iv: packIv(content.salt, content.iv),
+          ciphertext: content.ciphertext,
+          fileId: String(fileId),
+          ...(viewOnce ? { viewOnce: true } : {}),
+        });
+
+        setMessagesByChat((prev) => ({
+          ...prev,
+          [String(chatId)]: (prev[String(chatId)] || []).map((m) =>
+            m.id === tempId
+              ? {
+                  ...m,
+                  id: String(message.id),
+                  file: { ...m.file, fileId: String(fileId) },
+                  viewOnce: message.viewOnce === true || viewOnce,
+                  createdAt: message.createdAt,
+                }
+              : m
+          ),
+        }));
+        return message;
+      } catch (err) {
+        setMessagesByChat((prev) => ({
+          ...prev,
+          [String(chatId)]: (prev[String(chatId)] || []).filter((m) => m.id !== tempId),
+        }));
+        throw err;
+      }
     },
-    [chats, ensureChatKey, normalizeMessage, user]
+    [chats, user, modeByChat]
   );
 
   const deleteMessage = useCallback(async (chatId, messageId) => {
@@ -259,13 +671,54 @@ export function ChatProvider({ children }) {
     }));
   }, []);
 
+  // Delete ALL history of one chat (server wipes for everyone + realtime sync).
+  const clearChatHistory = useCallback(async (chatId) => {
+    await messagesApi.clear(chatId);
+    setMessagesByChat((prev) => ({ ...prev, [String(chatId)]: [] }));
+    setChats((prev) => {
+      const c = prev[String(chatId)];
+      if (!c) return prev;
+      return {
+        ...prev,
+        [String(chatId)]: {
+          ...c,
+          lastMessage: null,
+          unreadCount: 0,
+          lastActivity: new Date().toISOString(),
+        },
+      };
+    });
+  }, []);
+
+  // Hide a single message only on this device (for messages you didn't send,
+  // which the server only lets the sender delete). Never touches the server.
+  const deleteMessageLocal = useCallback((chatId, messageId) => {
+    setMessagesByChat((prev) => ({
+      ...prev,
+      [String(chatId)]: (prev[String(chatId)] || []).filter((m) => String(m.id) !== String(messageId)),
+    }));
+  }, []);
+
   const editMessage = useCallback(
     async (chatId, messageId, plaintext) => {
       const chat = chats[String(chatId)];
       if (!chat) throw new Error('Chat not loaded');
-      const key = await ensureChatKey(chat);
-      const payload = await encryptWithKey(key, JSON.stringify({ t: 'text', x: plaintext }));
-      await messagesApi.edit(chatId, messageId, { iv: payload.iv, ciphertext: payload.ciphertext });
+      const existing = (messagesByChat[String(chatId)] || []).find((m) => m.id === String(messageId));
+      if (existing && existing.mode === 'normal') {
+        await messagesApi.edit(chatId, messageId, { text: plaintext });
+      } else {
+        const existingIv = (existing && (existing.lockIv || existing.iv)) || '';
+        if (unpackIv(existingIv)) {
+          const pass = getSecureKey(user.id) || securePassCacheRef.current.get(String(chatId));
+          if (!pass) throw new Error('Set your 🔐 Secure Chat Key in Settings first.');
+          const payload = await encryptTextWithPassword(JSON.stringify({ t: 'text', x: plaintext }), pass);
+          await messagesApi.edit(chatId, messageId, { iv: packIv(payload.salt, payload.iv), ciphertext: payload.ciphertext });
+        } else {
+          const key = await ensureChatKey(chat);
+          const payload = await encryptWithKey(key, JSON.stringify({ t: 'text', x: plaintext }));
+          await messagesApi.edit(chatId, messageId, { iv: payload.iv, ciphertext: payload.ciphertext });
+        }
+      }
       setMessagesByChat((prev) => ({
         ...prev,
         [String(chatId)]: (prev[String(chatId)] || []).map((m) =>
@@ -273,12 +726,11 @@ export function ChatProvider({ children }) {
         ),
       }));
     },
-    [chats, ensureChatKey]
+    [chats, ensureChatKey, messagesByChat]
   );
 
   const createDirect = useCallback(
     async (peerId) => {
-      if (!identityReady) throw new Error('Encryption keys not ready. Please wait or re-login.');
       const existing = Object.values(chats).find(
         (c) => c.type === 'direct' && c.members.some((m) => String(m.id) === String(peerId))
       );
@@ -287,46 +739,67 @@ export function ChatProvider({ children }) {
         return existing;
       }
 
-      const [myKeyB64, peerPubB64] = await Promise.all([myPubKey(), getPublicKeyFor(peerId)]);
-      const chatKey = await generateChatKey();
-      const wraps = {};
-      wraps[String(user.id)] = await wrapChatKeyFor(chatKey, myKeyB64, user.id, user.id);
-      wraps[String(peerId)] = await wrapChatKeyFor(chatKey, peerPubB64, user.id, peerId);
+      // Secure messages now use the sender's Settings key — E2EE wraps are
+      // best-effort for legacy history only, never a startup blocker.
+      let wraps = {};
+      try {
+        if (hasPrivateKey()) {
+          const [myKeyB64, peerPubB64] = await Promise.all([myPubKey(), getPublicKeyFor(peerId)]);
+          const chatKey = await generateChatKey();
+          wraps[String(user.id)] = await wrapChatKeyFor(chatKey, myKeyB64, user.id, user.id);
+          wraps[String(peerId)] = await wrapChatKeyFor(chatKey, peerPubB64, user.id, peerId);
+          const { chatId } = await chatsApi.createDirect(peerId, wraps);
+          chatKeysRef.current.set(String(chatId), chatKey);
+          await refreshChats();
+          await openChat(chatId);
+          return chatId;
+        }
+      } catch {
+        wraps = {};
+      }
 
       const { chatId } = await chatsApi.createDirect(peerId, wraps);
-      chatKeysRef.current.set(String(chatId), chatKey);
       await refreshChats();
       await openChat(chatId);
       return chatId;
     },
-    [identityReady, chats, user, getPublicKeyFor, refreshChats, openChat]
+    [chats, user, getPublicKeyFor, refreshChats, openChat]
   );
 
   const createGroup = useCallback(
     async (name, memberIds, description) => {
-      if (!identityReady) throw new Error('Encryption keys not ready. Please wait or re-login.');
       const allIds = [...new Set([String(user.id), ...memberIds.map(String)])];
-      const keys = await Promise.all([
-        myPubKey(),
-        ...allIds.filter((id) => id !== String(user.id)).map((id) => getPublicKeyFor(id)),
-      ]);
-      const pubById = {};
-      pubById[String(user.id)] = keys[0];
-      allIds.filter((id) => id !== String(user.id)).forEach((id, i) => {
-        pubById[id] = keys[i + 1];
-      });
+      let wraps = {};
+      try {
+        if (hasPrivateKey()) {
+          const keys = await Promise.all([
+            myPubKey(),
+            ...allIds.filter((id) => id !== String(user.id)).map((id) => getPublicKeyFor(id)),
+          ]);
+          const pubById = {};
+          pubById[String(user.id)] = keys[0];
+          allIds.filter((id) => id !== String(user.id)).forEach((id, i) => {
+            pubById[id] = keys[i + 1];
+          });
 
-      const chatKey = await generateChatKey();
-      const wraps = {};
-      for (const uid of allIds) wraps[uid] = await wrapChatKeyFor(chatKey, pubById[uid], user.id, uid);
+          const chatKey = await generateChatKey();
+          for (const uid of allIds) wraps[uid] = await wrapChatKeyFor(chatKey, pubById[uid], user.id, uid);
+          const { chatId } = await chatsApi.createGroup(name, memberIds, wraps, description);
+          chatKeysRef.current.set(String(chatId), chatKey);
+          await refreshChats();
+          await openChat(chatId);
+          return chatId;
+        }
+      } catch {
+        wraps = {};
+      }
 
       const { chatId } = await chatsApi.createGroup(name, memberIds, wraps, description);
-      chatKeysRef.current.set(String(chatId), chatKey);
       await refreshChats();
       await openChat(chatId);
       return chatId;
     },
-    [identityReady, user, getPublicKeyFor, refreshChats, openChat]
+    [user, getPublicKeyFor, refreshChats, openChat]
   );
 
   const addMember = useCallback(
@@ -428,25 +901,47 @@ export function ChatProvider({ children }) {
     [emit]
   );
 
+  const markViewOnce = useCallback(async (chatId, messageId) => {
+    try {
+      await messagesApi.markViewed(chatId, messageId);
+    } catch {
+      // best-effort: local state is still wiped so the photo can't be reopened
+    }
+    setMessagesByChat((prev) => ({
+      ...prev,
+      [String(chatId)]: (prev[String(chatId)] || []).map((m) =>
+        m.id === String(messageId)
+          ? { ...m, viewedAt: new Date().toISOString(), expired: true, text: '', file: null }
+          : m
+      ),
+    }));
+  }, []);
+
   const decryptPreview = useCallback(
     async (chat) => {
       const lm = chat && chat.lastMessage;
       if (!lm || lm.deletedAt) return null;
-      try {
-        const key = await ensureChatKey(chat);
-        const raw = await decryptWithKey(key, { iv: lm.iv, ciphertext: lm.ciphertext });
-        const content = JSON.parse(raw);
-        if (content.t === 'text') return content.x.slice(0, 80);
-        return `[${(content.t || 'file').toUpperCase()}] ${content.n || ''}`.slice(0, 80);
-      } catch {
-        return null;
+      if (lm.viewOnce && lm.viewedAt) return '👁️ View-once photo (expired)';
+      // 🟢 Normal: plaintext preview, no keys needed.
+      if ((lm.mode || 'encrypted') === 'normal') {
+        if (lm.type && lm.type !== 'text') {
+          try {
+            const meta = JSON.parse(lm.text || '{}');
+            return `[${String(lm.type).toUpperCase()}] ${meta.n || ''}`.slice(0, 80);
+          } catch {
+            return `[${String(lm.type || 'file').toUpperCase()}]`.slice(0, 80);
+          }
+        }
+        return String(lm.text || '').slice(0, 80) || null;
       }
+      // 🔐 Secure: never show plaintext in the list — receiver unlocks per message.
+      return '🔐 Encrypted message';
     },
-    [ensureChatKey]
+    []
   );
 
   useEffect(() => {
-    if (!user || !identityReady) return undefined;
+    if (!user) return undefined;
 
     const offs = [];
 
@@ -545,11 +1040,81 @@ export function ChatProvider({ children }) {
     );
 
     offs.push(
-      subscribe('message:edited', ({ chatId, messageId, iv, ciphertext, editedAt }) => {
+      subscribe('chat:cleared', ({ chatId }) => {
+        const cid = String(chatId);
+        setMessagesByChat((prev) => ({ ...prev, [cid]: [] }));
+        setChats((prev) => {
+          const c = prev[cid];
+          if (!c) return prev;
+          return {
+            ...prev,
+            [cid]: { ...c, lastMessage: null, unreadCount: 0, lastActivity: new Date().toISOString() },
+          };
+        });
+      })
+    );
+
+    offs.push(
+      subscribe('message:viewed', ({ chatId, messageId, viewerId, viewedAt }) => {
+        setMessagesByChat((prev) => ({
+          ...prev,
+          [String(chatId)]: (prev[String(chatId)] || []).map((m) =>
+            m.id === String(messageId)
+              ? {
+                  ...m,
+                  viewedAt: viewedAt || new Date().toISOString(),
+                  viewedBy: [...new Set([...(m.viewedBy || []), String(viewerId)])],
+                  expired: true,
+                  text: '',
+                  file: null,
+                }
+              : m
+          ),
+        }));
+      })
+    );
+
+    offs.push(
+      subscribe('message:edited', ({ chatId, messageId, mode, text, iv, ciphertext, editedAt }) => {
         (async () => {
           const cid = String(chatId);
           const chat = chatsRef.current[cid];
           if (!chat) return;
+          // 🟢 Normal edit carries plaintext; 🔐 secure edit carries iv/ciphertext.
+          if ((mode || '') === 'normal') {
+            setMessagesByChat((prev) => ({
+              ...prev,
+              [cid]: (prev[cid] || []).map((m) =>
+                m.id === String(messageId) ? { ...m, text: text || m.text, editedAt } : m
+              ),
+            }));
+            return;
+          }
+          // Shared-key edit: re-lock; cached key auto-opens if available.
+          if (unpackIv(iv)) {
+            const cached = securePassCacheRef.current.get(cid);
+            const content = cached ? await tryPassDecrypt(iv, ciphertext, cached) : null;
+            if (content && content.t === 'text') {
+              setMessagesByChat((prev) => ({
+                ...prev,
+                [cid]: (prev[cid] || []).map((m) =>
+                  m.id === String(messageId)
+                    ? { ...m, text: content.x, editedAt, lockIv: iv, lockCiphertext: ciphertext }
+                    : m
+                ),
+              }));
+            } else {
+              setMessagesByChat((prev) => ({
+                ...prev,
+                [cid]: (prev[cid] || []).map((m) =>
+                  m.id === String(messageId)
+                    ? { ...m, locked: true, text: '', file: null, lockIv: iv, lockCiphertext: ciphertext, lockPreview: String(ciphertext || '').slice(0, 160), editedAt }
+                    : m
+                ),
+              }));
+            }
+            return;
+          }
           const content = await decryptContent(chat, iv, ciphertext);
           if (!content) return;
           setMessagesByChat((prev) => ({
@@ -607,6 +1172,12 @@ export function ChatProvider({ children }) {
         refreshChats().catch(() => {})
       )
     );
+    // DP change by anyone -> refresh so new avatar is visible to everyone
+    offs.push(
+      subscribe('user:avatar_updated', () =>
+        refreshChats().catch(() => {})
+      )
+    );
     offs.push(
       subscribe('chat:keyrotated', ({ chatId }) => {
         chatKeysRef.current.delete(String(chatId));
@@ -627,7 +1198,7 @@ export function ChatProvider({ children }) {
     );
 
     return () => offs.forEach((off) => off());
-  }, [user, identityReady, subscribe, refreshChats, normalizeMessage, loadMessages, decryptContent]);
+  }, [user, subscribe, refreshChats, normalizeMessage, loadMessages, decryptContent]);
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -728,6 +1299,50 @@ export function ChatProvider({ children }) {
     [messagesByChat, user]
   );
 
+  // Decrypt a 🔐 shared-key file attachment. Password comes from the per-message
+  // unlock (then-and-there key entry) or the chat session cache.
+  const decryptSecureFile = useCallback(
+    async (chatId, file, password) => {
+      const cid = String(chatId || '');
+      const pw =
+        (password && String(password)) ||
+        securePassCacheRef.current.get(cid) ||
+        getSecureKey(user && user.id) ||
+        '';
+      if (!pw) throw new Error('Enter the key to decrypt this file');
+      const buffer = await filesApi.download(file.fileId);
+      if (!buffer || buffer.byteLength === 0) throw new Error('Downloaded file is empty');
+      const u8 = new Uint8Array(buffer);
+      // base64 in chunks to avoid stack overflow on large files
+      let binary = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < u8.length; i += chunk) {
+        binary += String.fromCharCode(...u8.subarray(i, i + chunk));
+      }
+      const ctB64 = btoa(binary);
+      let plain;
+      try {
+        plain = await decryptBytesWithPassword({ salt: file.fs, iv: file.fv, ciphertext: ctB64 }, pw);
+      } catch {
+        throw new Error('Wrong key — could not decrypt this file');
+      }
+      let name = file.name || 'attachment';
+      if (file.nmSalt && file.nmIv && file.nmCt) {
+        try {
+          name = await decryptTextWithPassword(
+            { salt: file.nmSalt, iv: file.nmIv, ciphertext: file.nmCt },
+            pw
+          );
+        } catch {
+          // keep fallback name
+        }
+      }
+      if (cid) securePassCacheRef.current.set(cid, pw);
+      return { plain, name };
+    },
+    [user]
+  );
+
   const value = useMemo(
     () => ({
       chats,
@@ -738,10 +1353,15 @@ export function ChatProvider({ children }) {
       unreadTotal,
       messageUrgency,
       onlineIds: null,
+      modeByChat,
+      getChatMode,
+      setChatMode,
       openChat,
       sendText,
       sendFile,
       deleteMessage,
+      deleteMessageLocal,
+      clearChatHistory,
       editMessage,
       createDirect,
       createGroup,
@@ -758,11 +1378,17 @@ export function ChatProvider({ children }) {
       addReaction,
       removeReaction,
       detectMessageUrgency,
+      markViewOnce,
+      unlockSecureMessage,
+      getChatPasscode,
+      decryptSecureFile,
     }),
     [
-      chats, activeChatId, messagesByChat, typingByChat, loadingChats, unreadTotal, messageUrgency,
-      openChat, sendText, sendFile, deleteMessage, editMessage, createDirect, createGroup,
-      addMember, removeMemberAndRotate, leaveChat, rotateGroupKeyManually, notifyTyping, decryptPreview, refreshChats, loadMessages, getPublicKeyFor, searchMessages, addReaction, removeReaction, detectMessageUrgency,
+      chats, activeChatId, messagesByChat, typingByChat, loadingChats, unreadTotal, messageUrgency, modeByChat,
+      getChatMode, setChatMode,
+      openChat, sendText, sendFile, deleteMessage, deleteMessageLocal, clearChatHistory, editMessage, createDirect, createGroup,
+      addMember, removeMemberAndRotate, leaveChat, rotateGroupKeyManually, notifyTyping, decryptPreview, refreshChats, loadMessages, getPublicKeyFor, searchMessages, addReaction, removeReaction, detectMessageUrgency, markViewOnce,
+      unlockSecureMessage, getChatPasscode, decryptSecureFile,
     ]
   );
 

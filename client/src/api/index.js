@@ -5,7 +5,7 @@ const unwrap = (res) => res.data.data;
 export const authApi = {
   register: (payload) => http.post('/auth/register', payload).then((r) => r.data),
   verifyEmail: (token) => http.post('/auth/verify-email', { token }).then((r) => r.data),
-  resendVerification: () => http.post('/auth/resend-verification').then((r) => r.data),
+  resendVerification: (email) => http.post('/auth/resend-verification', email ? { email } : {}).then((r) => r.data),
   login: async (email, password) =>
     unwrap(await http.post('/auth/login', { email, password })),
   refresh: async () => unwrap(await http.post('/auth/refresh')),
@@ -19,6 +19,15 @@ export const authApi = {
 export const usersApi = {
   me: () => http.get('/users/me').then(unwrap),
   updateMe: (patch) => http.patch('/users/me', patch).then(unwrap),
+  uploadAvatar: async (file) => {
+    const form = new FormData();
+    form.append('avatar', file);
+    const res = await http.post('/users/me/avatar', form, {
+      timeout: 60000,
+    });
+    return res.data.data;
+  },
+  removeAvatar: () => http.delete('/users/me/avatar').then(unwrap),
   changePassword: (currentPassword, newPassword) =>
     http.patch('/users/me/password', { currentPassword, newPassword }).then((r) => r.data),
   saveKeys: (publicKey, backup) => http.put('/users/me/keys', { publicKey, backup }),
@@ -52,6 +61,7 @@ export const chatsApi = {
 };
 
 export const messagesApi = {
+  // payload: 🟢 normal {mode:'normal', type:'text', text} | 🔐 secure {mode:'encrypted', type, iv, ciphertext, ...}
   send: (chatId, payload) =>
     http.post(`/chats/${chatId}/messages`, payload).then((r) => r.data.data.message),
   list: (chatId, { before, limit = 30 } = {}) =>
@@ -61,9 +71,11 @@ export const messagesApi = {
   markRead: (chatId, ids) => http.post(`/chats/${chatId}/read`, { ids }),
   markDelivered: (chatId, ids) => http.post(`/chats/${chatId}/delivered`, { ids }),
   remove: (chatId, messageId) => http.delete(`/chats/${chatId}/messages/${messageId}`),
+  clear: (chatId) => http.delete(`/chats/${chatId}/messages`).then((r) => r.data),
   edit: (chatId, messageId, payload) => http.patch(`/chats/${chatId}/messages/${messageId}`, payload),
   addReaction: (chatId, messageId, emoji) => http.post(`/chats/${chatId}/messages/${messageId}/reactions`, { emoji }),
   removeReaction: (chatId, messageId, emoji) => http.delete(`/chats/${chatId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`),
+  markViewed: (chatId, messageId) => http.post(`/chats/${chatId}/messages/${messageId}/view`).then((r) => r.data),
 };
 
 export const filesApi = {
@@ -74,6 +86,7 @@ export const filesApi = {
     form.append('nameCt', nameCt);
     form.append('mimeHint', mimeHint || '');
     const res = await http.post(`/chats/${chatId}/files`, form, {
+      timeout: 300000,
       onUploadProgress: (e) => {
         if (onProgress && e.total) onProgress(e.loaded / e.total);
       },
@@ -92,22 +105,12 @@ export const notificationsApi = {
   readAll: () => http.post('/notifications/read-all'),
 };
 
+// AI calls can take a while (model generation) — allow up to 2 minutes.
+const AI_TIMEOUT = 120000;
+
 export const aiApi = {
-  summarize: (chatId, style = 'brief') =>
-    http.post(`/ai/summarize/${chatId}`, { style }).then(unwrap),
-  smartReplies: (chatId, context = '', messages = []) =>
-    http.post(`/ai/smart-replies/${chatId}`, { context, messages }).then(unwrap),
   translate: (text, targetLang = 'en') =>
-    http.post('/ai/translate', { text, targetLang }).then(unwrap),
-  transcribe: async (audioBlob, language = null) => {
-    const form = new FormData();
-    form.append('audio', audioBlob, 'voice.webm');
-    if (language) form.append('language', language);
-    const res = await http.post('/ai/transcribe', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return res.data.data;
-  },
+    http.post('/ai/translate', { text, targetLang }, { timeout: AI_TIMEOUT }).then(unwrap),
   detectUrgency: (messages) =>
     http.post('/ai/detect-urgency', { messages }).then(unwrap),
 };

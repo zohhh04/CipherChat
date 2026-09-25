@@ -2,6 +2,9 @@ const { z } = require('zod');
 
 const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'Invalid ObjectId');
 const b64 = (max = 200000) => z.string().max(max).regex(/^[A-Za-z0-9+/=_-]*$/, 'Invalid base64');
+// Packed secure-chat iv is "salt.iv" (two base64 parts joined by a dot),
+// e.g. 24-char salt + "." + 16-char iv = 41 chars. Plain b64(40) rejects it.
+const packedIv = z.string().max(100).regex(/^[A-Za-z0-9+/=_-]*(\.[A-Za-z0-9+/=_-]*)?$/, 'Invalid iv');
 const wrapSchema = z.object({ iv: b64(40), ct: b64(500), by: objectId });
 const keyWrapsSchema = z.record(objectId, wrapSchema).default({});
 
@@ -26,6 +29,10 @@ const verifyEmail = {
 
 const forgotPassword = {
   body: z.object({ email: z.string().trim().toLowerCase().email() }),
+};
+
+const resendVerification = {
+  body: z.object({ email: z.string().trim().toLowerCase().email().max(254).optional() }).default({}),
 };
 
 const resetPassword = {
@@ -103,14 +110,36 @@ const rotateKeys = {
 const sendMessage = {
   params: z.object({ id: objectId }),
   body: z.object({
-    iv: b64(40),
-    ciphertext: b64(500000),
+    mode: z.enum(['normal', 'encrypted']).default('encrypted'),
+    // 🟢 normal text (plaintext) — also accepted as `message` alias
+    text: z.string().max(10000).optional().default(''),
+    message: z.string().max(10000).optional(),
+    // 🔐 encrypted payload (iv may be packed "salt.iv" for shared-key messages)
+    iv: packedIv.optional().default(''),
+    ciphertext: b64(500000).optional().default(''),
     type: z.enum(['text', 'image', 'video', 'audio', 'file', 'system']).default('text'),
     fileId: objectId.optional(),
     replyTo: objectId.optional(),
+    // One-time view: images only. Sender opts in; server enforces image-only.
+    viewOnce: z.boolean().optional().default(false),
   })
     .strict()
-    .refine((b) => !(b.type !== 'text' && !b.fileId), { message: 'fileId required for media messages' }),
+    .refine((b) => !(b.type !== 'text' && !b.fileId), { message: 'fileId required for media messages' })
+    .refine((b) => !(b.viewOnce === true && b.type !== 'image'), { message: 'viewOnce is allowed for images only' })
+    .refine(
+      (b) => {
+        if (b.mode === 'normal' && b.type === 'text' && !((b.text || b.message || '').trim())) return false;
+        return true;
+      },
+      { message: 'text/message is required for normal messages' }
+    )
+    .refine(
+      (b) => {
+        if (b.mode === 'encrypted' && b.type === 'text' && !(b.ciphertext || '').trim()) return false;
+        return true;
+      },
+      { message: 'ciphertext is required for encrypted messages' }
+    ),
 };
 
 const listMessages = {
@@ -134,8 +163,10 @@ const deleteAccount = {
 const editMessage = {
   params: z.object({ id: objectId, mid: objectId }),
   body: z.object({
-    iv: b64(40),
-    ciphertext: b64(500000),
+    iv: packedIv.optional().default(''),
+    ciphertext: b64(500000).optional().default(''),
+    text: z.string().max(10000).optional(),
+    message: z.string().max(10000).optional(),
   }).strict(),
 };
 
@@ -158,7 +189,7 @@ const translateText = {
 };
 
 module.exports = {
-  register, login, verifyEmail, forgotPassword, resetPassword,
+  register, login, verifyEmail, forgotPassword, resetPassword, resendVerification,
   updateMe, changePassword, saveKeys, searchUsers, deleteAccount,
   createDirectChat, createGroupChat, chatIdParam, updateGroup, addMembers, removeMember, rotateKeys,
   sendMessage, listMessages, messageIdParam, uploadFile, editMessage, addReaction, removeReaction, translateText,

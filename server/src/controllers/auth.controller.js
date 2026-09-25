@@ -46,8 +46,18 @@ const register = catchAsync(async (req, res) => {
     expiresAt: new Date(Date.now() + 24 * 3600 * 1000),
   });
 
+  // Never fail registration just because the verification email could not be
+  // delivered (SMTP down, bad credentials, spam filter, ...). Log it and —
+  // outside production — hand the token back so the account can still be
+  // verified from the client.
   const mail = emailService.verificationEmail(user, rawToken);
-  await emailService.sendMail({ to: user.email, ...mail });
+  let mailDelivered = false;
+  try {
+    const result = await emailService.sendMail({ to: user.email, ...mail });
+    mailDelivered = !!(result && result.delivered);
+  } catch (mailErr) {
+    console.error('Failed to send verification email:', mailErr.message);
+  }
 
   audit('auth.register', { actorId: user._id, email: user.email, req });
 
@@ -58,7 +68,8 @@ const register = catchAsync(async (req, res) => {
       username: user.username,
       email: user.email,
       verificationRequired: config.emailVerificationRequired,
-      ...(devTokenEnabled() ? { devVerifyToken: rawToken } : {}),
+      verificationEmailSent: mailDelivered,
+      ...(devTokenEnabled() || (!mailDelivered && !config.isProd) ? { devVerifyToken: rawToken } : {}),
     },
   });
 });
@@ -78,16 +89,31 @@ const verifyEmail = catchAsync(async (req, res) => {
 });
 
 const resendVerification = catchAsync(async (req, res) => {
-  if (!req.user.isVerified) {
+  // Works two ways: signed-in user (Settings button, via optionalAuth) or an
+  // { email } in the body (login page, where login is blocked until verified
+  // so the user otherwise has no token to call this with). Always responds
+  // generically so account existence is not leaked.
+  let target = req.user || null;
+  const email = req.body && typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!target && email) {
+    target = await User.findOne({ email });
+  }
+  if (target && !target.isVerified) {
     const rawToken = User.randomToken();
     await Token.create({
-      user: req.user._id,
+      user: target._id,
       type: TOKEN_TYPES.VERIFY,
       tokenHash: hash(rawToken),
       expiresAt: new Date(Date.now() + 24 * 3600 * 1000),
     });
-    const mail = emailService.verificationEmail(req.user, rawToken);
-    await emailService.sendMail({ to: req.user.email, ...mail });
+    // Same rule as register: a mail failure must not turn into a 500 —
+    // the user would otherwise be stuck with no way to get a new link.
+    try {
+      const mail = emailService.verificationEmail(target, rawToken);
+      await emailService.sendMail({ to: target.email, ...mail });
+    } catch (mailErr) {
+      console.error('Failed to resend verification email:', mailErr.message);
+    }
   }
   res.json({ ok: true, message: 'If your account is unverified, a new link has been sent' });
 });

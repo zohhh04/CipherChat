@@ -8,6 +8,8 @@ router.use(requireAuth);
 
 router.get('/me', ctrl.me);
 router.patch('/me', validate(v.updateMe), ctrl.updateMe);
+router.post('/me/avatar', ctrl.uploadAvatar);
+router.delete('/me/avatar', ctrl.removeAvatar);
 router.patch('/me/password', validate(v.changePassword), ctrl.changePassword);
 router.put('/me/keys', validate(v.saveKeys), ctrl.saveKeys);
 router.get('/me/keys', ctrl.getBackup);

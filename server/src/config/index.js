@@ -45,12 +45,20 @@ module.exports = {
   emailVerificationRequired: bool(process.env.EMAIL_VERIFICATION_REQUIRED, true),
 
   smtp: {
-    host: process.env.SMTP_HOST || '',
-    port: num(process.env.SMTP_PORT, 587),
-    user: process.env.SMTP_USER || '',
-    pass: process.env.SMTP_PASS || '',
-    from: process.env.MAIL_FROM || 'Secure Chat <no-reply@localhost>',
-    secure: num(process.env.SMTP_PORT, 587) === 465,
+    // Empty by default: with no SMTP configured, emails are logged to the
+    // console in dev (see email.service) instead of failing against Gmail.
+    host: process.env.SMTP_HOST || process.env.EMAIL_HOST || '',
+    port: num(process.env.SMTP_PORT || process.env.EMAIL_PORT, 587),
+    user: process.env.SMTP_USER || process.env.EMAIL_USER || '',
+    // Gmail app passwords are shown with spaces but must be used without them
+    pass: (process.env.SMTP_PASS || process.env.EMAIL_PASS || '').replace(/\s+/g, ''),
+    from:
+      process.env.MAIL_FROM ||
+      process.env.EMAIL_FROM ||
+      (process.env.SMTP_USER || process.env.EMAIL_USER
+        ? `CipherChat <${process.env.SMTP_USER || process.env.EMAIL_USER}>`
+        : 'Secure Chat <no-reply@localhost>'),
+    secure: num(process.env.SMTP_PORT || process.env.EMAIL_PORT, 587) === 465,
   },
 
   adminEmail: process.env.ADMIN_EMAIL || '',

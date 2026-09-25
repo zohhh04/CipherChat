@@ -120,6 +120,22 @@ describe('Authentication & account security', () => {
     expect(['session_revoked', 'refresh_invalid']).toContain(reuse.body.code);
   });
 
+  it('resends verification without a token (by email), generically for unknown emails', async () => {
+    const u = uniqueUser('resend');
+    const reg = await request(app).post('/api/auth/register').send(u);
+    expect(reg.status).toBe(201);
+
+    const resend = await request(app).post('/api/auth/resend-verification').send({ email: u.email });
+    expect(resend.status).toBe(200);
+    expect(resend.body.ok).toBe(true);
+
+    const unknown = await request(app)
+      .post('/api/auth/resend-verification')
+      .send({ email: `nobody.${Date.now()}@test.dev` });
+    expect(unknown.status).toBe(200);
+    expect(unknown.body.ok).toBe(true);
+  });
+
   it('runs the password reset flow end-to-end', async () => {
     const u = uniqueUser('resetflow');
     await registerVerified(u);

@@ -6,14 +6,14 @@ import { useAuth } from './AuthContext';
 const SocketContext = createContext(null);
 
 export function SocketProvider({ children }) {
-  const { user, identityReady } = useAuth();
+  const { user } = useAuth();
   const [connected, setConnected] = useState(false);
   const [onlineIds, setOnlineIds] = useState(new Set());
   const socketRef = useRef(null);
   const listenersRef = useRef([]);
 
   useEffect(() => {
-    if (!user || !identityReady) return undefined;
+    if (!user) return undefined;
 
     const socket = io(SOCKET_URL || undefined, {
       auth: { token: getAccessToken() },
@@ -56,7 +56,7 @@ export function SocketProvider({ children }) {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [user, identityReady]);
+  }, [user]);
 
   const subscribe = useMemo(
     () => (event, handler) => {

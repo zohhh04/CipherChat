@@ -13,6 +13,17 @@ const catchAsync = require('../utils/catchAsync');
 const { revokeAllForUser } = require('../services/token.service');
 const { audit } = require('../services/audit.service');
 const { NOTIFICATION_TYPES } = require('../utils/constants');
+const multer = require('multer');
+const crypto = require('crypto');
+
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) return cb(new Error('Only images allowed'));
+    cb(null, true);
+  },
+}).single('avatar');
 
 const me = catchAsync(async (req, res) => {
   const sessions = await Session.countDocuments({ user: req.user._id, revokedAt: null });
@@ -45,7 +56,7 @@ const search = catchAsync(async (req, res) => {
     $or: [{ username: regex }, { email: regex }],
     isBanned: false,
   })
-    .select('username about')
+    .select('username about avatar')
     .limit(15);
 
   res.json({ ok: true, data: { users } });
@@ -60,6 +71,54 @@ const updateMe = catchAsync(async (req, res) => {
   const user = await User.findById(req.user._id);
   res.json({ ok: true, data: { user: user.toMeJSON() } });
 });
+
+const uploadAvatar = catchAsync(async (req, res) => {
+  await new Promise((resolve, reject) => {
+    avatarUpload(req, res, (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
+  if (!req.file) throw ApiError.badRequest('Avatar file required', 'avatar_missing');
+
+  const ext = req.file.mimetype.split('/')[1] || 'png';
+  const b64 = req.file.buffer.toString('base64');
+  const dataUrl = `data:${req.file.mimetype};base64,${b64}`;
+
+  await User.updateOne({ _id: req.user._id }, { $set: { avatar: dataUrl } });
+  const user = await User.findById(req.user._id);
+  broadcastAvatarChange(req, req.user._id);
+  res.json({ ok: true, data: { user: user.toMeJSON() } });
+});
+
+const removeAvatar = catchAsync(async (req, res) => {
+  await User.updateOne({ _id: req.user._id }, { $set: { avatar: '' } });
+  const user = await User.findById(req.user._id);
+  broadcastAvatarChange(req, req.user._id);
+  res.json({ ok: true, data: { user: user.toMeJSON() } });
+});
+
+function broadcastAvatarChange(req, userId) {
+  try {
+    const io = req.app && req.app.get('io');
+    if (!io) return;
+    const uid = String(userId);
+    // Tell every client to refresh chats / user lists so the new DP shows everywhere.
+    io.emit('user:avatar_updated', { userId: uid });
+    Chat.find({ 'members.user': userId })
+      .select('_id')
+      .lean()
+      .then((chats) => {
+        for (const c of chats) {
+          io.to(`chat:${String(c._id)}`).emit('chat:updated', { chatId: String(c._id) });
+        }
+      })
+      .catch(() => {});
+  } catch {
+    // best-effort only
+  }
+}
 
 const changePassword = catchAsync(async (req, res) => {
   const { currentPassword, newPassword } = req.body;
@@ -140,7 +199,7 @@ const deleteAccount = catchAsync(async (req, res) => {
 
     await Message.updateMany(
       { chat: { $in: chatIds }, sender: user._id },
-      { $set: { iv: '', ciphertext: '', deletedAt: new Date(), file: null } }
+      { $set: { iv: '', ciphertext: '', text: '', deletedAt: new Date(), file: null } }
     );
 
     if (msgIds.length > 0) {
@@ -190,4 +249,4 @@ const deleteAccount = catchAsync(async (req, res) => {
   res.json({ ok: true, message: 'Account deleted permanently' });
 });
 
-module.exports = { me, keysOf, search, updateMe, changePassword, saveKeys, getBackup, mySessions, revokeSession, deleteAccount };
+module.exports = { me, keysOf, search, updateMe, uploadAvatar, removeAvatar, changePassword, saveKeys, getBackup, mySessions, revokeSession, deleteAccount };

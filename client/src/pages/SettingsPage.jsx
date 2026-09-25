@@ -4,12 +4,15 @@ import { usersApi, authApi, apiError } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { fingerprint } from '../crypto/e2ee';
+import { getSecureKey, setSecureKey } from '../crypto/securePass';
+import PasswordInput from '../components/common/PasswordInput';
 import Avatar from '../components/common/Avatar';
 import { Twemoji } from '../components/common/EmojiText';
 import { toast } from '../components/common/Toast';
 
 export default function SettingsPage() {
-  const { user, publicKey, identityReady, logout } = useAuth();
+  const { user, publicKey, identityReady, logout, setUser } = useAuth();
+  const [secureKey, setSecureKeyInput] = useState(() => getSecureKey(user?.id));
   const { theme, toggle } = useTheme();
   const navigate = useNavigate();
 
@@ -20,6 +23,7 @@ export default function SettingsPage() {
   const [deletePw, setDeletePw] = useState('');
   const [busy, setBusy] = useState(false);
   const [resending, setResending] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -133,6 +137,39 @@ export default function SettingsPage() {
     }
   };
 
+  const handleAvatarUpload = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      toast('Max avatar size is 5 MB', 'error');
+      return;
+    }
+    setAvatarBusy(true);
+    try {
+      const { user: updated } = await usersApi.uploadAvatar(file);
+      setUser(updated);
+      toast('Profile photo updated', 'success');
+    } catch (err) {
+      toast(apiError(err).message || 'Upload failed', 'error');
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const handleAvatarRemove = async () => {
+    setAvatarBusy(true);
+    try {
+      const { user: updated } = await usersApi.removeAvatar();
+      setUser(updated);
+      toast('Profile photo removed', 'success');
+    } catch (err) {
+      toast(apiError(err).message, 'error');
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
   return (
     <div className="settings-page">
       <header className="settings-header">
@@ -148,13 +185,25 @@ export default function SettingsPage() {
         <section className="card">
           <h3>👤 Account</h3>
           <div className="profile-row">
-            <Avatar id={user.id} name={user.username} size={64} />
+            <div className="avatar-upload-wrap">
+              <Avatar id={user.id} name={user.username} size={64} avatar={user.avatar} />
+              <label className="avatar-overlay" title="Change photo">
+                📷
+                <input type="file" accept="image/*" hidden onChange={handleAvatarUpload} disabled={avatarBusy} />
+              </label>
+              {avatarBusy && <span className="avatar-spinner" />}
+            </div>
             <div>
               <strong>{user.username}</strong>
               <p>{user.email}</p>
               <span className={`role-tag ${user.role}`}>{user.role}</span>
             </div>
           </div>
+          {user.avatar && (
+            <button type="button" className="btn sm" onClick={handleAvatarRemove} disabled={avatarBusy}>
+              Remove photo
+            </button>
+          )}
           <div className="info-row">
             <span className="info-label">Member since</span>
             <span className="info-value">{memberSince}</span>
@@ -218,6 +267,62 @@ export default function SettingsPage() {
             <p className="muted small">Compare this with your contacts to verify identity</p>
             <code className="fingerprint">{fp || 'Generating…'}</code>
           </div>
+          <div className="fingerprint-section">
+            <label className="field-label">🔐 Secure Chat Key (shared key)</label>
+            <p className="muted small">
+              This key encrypts every message you send in 🔐 Secure mode. Share this exact key
+              with your receiver (outside the chat) — they type it on the locked message to view it.
+              No password is asked at startup.
+            </p>
+            <PasswordInput
+              placeholder="e.g. mango-sunset-42 (share with receiver)"
+              value={secureKey}
+              onChange={(e) => setSecureKeyInput(e.target.value)}
+              autoComplete="off"
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn primary sm"
+                onClick={() => {
+                  if (!secureKey.trim()) {
+                    toast('Enter a key first', 'error');
+                    return;
+                  }
+                  setSecureKey(user.id, secureKey.trim());
+                  toast('🔐 Secure Chat Key saved — receivers use this same key to decrypt', 'success');
+                }}
+              >
+                💾 Save key
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => {
+                  const rand = `key-${Math.random().toString(36).slice(2, 6)}-${Math.random().toString(36).slice(2, 6)}`;
+                  setSecureKeyInput(rand);
+                  setSecureKey(user.id, rand);
+                  toast('New random key generated & saved', 'success');
+                }}
+              >
+                🎲 Generate
+              </button>
+              {getSecureKey(user.id) && (
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => {
+                    navigator.clipboard.writeText(getSecureKey(user.id)).then(() => toast('Key copied — share it with your receiver', 'success')).catch(() => {});
+                  }}
+                >
+                  📋 Copy
+                </button>
+              )}
+            </div>
+            <p className="muted small" style={{ marginTop: 6 }}>
+              Current: <code>{getSecureKey(user.id) ? '•••••• (saved)' : 'not set — set one before sending secure messages'}</code>
+            </p>
+          </div>
         </section>
 
         {/* Sessions Section */}
@@ -251,25 +356,19 @@ export default function SettingsPage() {
         {/* Change Password Section */}
         <section className="card">
           <h3>🔑 Change Password</h3>
-          <input
-            className="text-input"
-            type="password"
+          <PasswordInput
             placeholder="Current password"
             value={pw.current}
             onChange={(e) => setPw({ ...pw, current: e.target.value })}
             autoComplete="current-password"
           />
-          <input
-            className="text-input"
-            type="password"
+          <PasswordInput
             placeholder="New password (min 10 chars)"
             value={pw.next}
             onChange={(e) => setPw({ ...pw, next: e.target.value })}
             autoComplete="new-password"
           />
-          <input
-            className="text-input"
-            type="password"
+          <PasswordInput
             placeholder="Confirm new password"
             value={pw.confirm}
             onChange={(e) => setPw({ ...pw, confirm: e.target.value })}
@@ -278,7 +377,7 @@ export default function SettingsPage() {
           <button type="button" className="btn primary" onClick={changePassword} disabled={busy}>
             {busy ? 'Updating...' : 'Update password'}
           </button>
-          <p className="muted small">⚠️ Changing your password will sign you out on every device and re-wrap your encryption keys.</p>
+          <p className="muted small">⚠️ Changing your password will sign you out on every device. Your encryption identity is refreshed automatically on next sign-in.</p>
         </section>
 
         {/* About Section */}
@@ -314,9 +413,7 @@ export default function SettingsPage() {
           <p className="muted">
             Once you delete your account, there is no going back. Please be certain.
           </p>
-          <input
-            className="text-input"
-            type="password"
+          <PasswordInput
             placeholder="Enter your password to confirm"
             value={deletePw}
             onChange={(e) => setDeletePw(e.target.value)}

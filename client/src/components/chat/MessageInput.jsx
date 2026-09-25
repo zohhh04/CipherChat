@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Twemoji } from '../common/EmojiText';
 import { useChat } from '../../context/ChatContext';
+import { useAuth } from '../../context/AuthContext';
+import { getSecureKey, setSecureKey } from '../../crypto/securePass';
 import { toast } from '../common/Toast';
 
 const EMOJIS = ['😀', '😂', '🥲', '😍', '👍', '🙏', '🔥', '🎉', '❤️', '😢', '😮', '🤔'];
@@ -13,14 +16,20 @@ function getSupportedMimeType() {
   return '';
 }
 
-export default function MessageInput({ chatId, editingMessage, onEditSubmit, onEditCancel, replyTo, onReplyCancel }) {
+export default function MessageInput({ chatId, editingMessage, onEditSubmit, onEditCancel, replyTo, onReplyCancel, chatMode = 'normal' }) {
   const { sendText, sendFile, notifyTyping } = useChat();
+  const { user } = useAuth();
+  const secure = chatMode === 'encrypted';
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [progress, setProgress] = useState(null);
+  const [viewOnce, setViewOnce] = useState(false);
+  const [keyNeeded, setKeyNeeded] = useState(false);
+  const [keyDraft, setKeyDraft] = useState('');
+  const hasSecureKey = Boolean(user && getSecureKey(user.id));
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const startedAtRef = useRef(0);
@@ -32,6 +41,11 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
       setText(editingMessage.text || '');
     }
   }, [chatId, editingMessage]);
+
+  useEffect(() => {
+    setKeyNeeded(false);
+    setKeyDraft('');
+  }, [chatId, chatMode]);
 
   useEffect(() => {
     return () => {
@@ -50,16 +64,31 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
       if (editingMessage) {
         await onEditSubmit(trimmed);
       } else {
-        await sendText(chatId, trimmed, replyTo ? replyTo.id : undefined);
+        await sendText(chatId, trimmed, replyTo ? replyTo.id : undefined, { mode: chatMode });
       }
       setText('');
       if (onReplyCancel) onReplyCancel();
       notifyTyping(chatId, false);
     } catch (e) {
-      toast(e.message || 'Failed to send message', 'error');
+      const msg = e.message || 'Failed to send message';
+      if (/secure chat key/i.test(msg)) setKeyNeeded(true);
+      toast(msg, 'error');
     } finally {
       setBusy(false);
     }
+  };
+
+  const saveSecureKey = () => {
+    const v = keyDraft.trim();
+    if (!v) {
+      toast('Enter a key first', 'error');
+      return;
+    }
+    if (!user) return;
+    setSecureKey(user.id, v);
+    setKeyDraft('');
+    setKeyNeeded(false);
+    toast('🔐 Secure Chat Key saved — now send again. Share this exact key with your receiver so they can decrypt.', 'success');
   };
 
   const handleFilePick = (accept, kind) => async (e) => {
@@ -70,12 +99,21 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
       toast('Max file size is 25 MB', 'error');
       return;
     }
+    const wantsViewOnce = viewOnce && (file.type || '').startsWith('image/');
+    if (viewOnce && !wantsViewOnce) {
+      toast('One-time view works for photos only', 'error');
+      return;
+    }
+    // View-once photos are always sent as type 'image' so the server enforces image-only.
+    const sendKind = wantsViewOnce ? 'image' : kind;
     setBusy(true);
     setProgress(0);
     try {
-      await sendFile(chatId, file, kind, undefined, (p) => setProgress(p));
-      toast('Attachment sent', 'success');
+      await sendFile(chatId, file, sendKind, undefined, (p) => setProgress(p), { ...(wantsViewOnce ? { viewOnce: true } : {}), mode: chatMode });
+      toast(wantsViewOnce ? 'View-once photo sent 👁️' : 'Attachment sent', 'success');
+      setViewOnce(false);
     } catch (err) {
+      if (/secure chat key/i.test(err.message || '')) setKeyNeeded(true);
       toast(err.message || 'Upload failed', 'error');
     } finally {
       setBusy(false);
@@ -122,9 +160,10 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
         setRecording(false);
         setBusy(true);
         try {
-          await sendFile(chatId, file, 'audio', seconds);
+          await sendFile(chatId, file, 'audio', seconds, undefined, { mode: chatMode });
           toast('Voice note sent', 'success');
         } catch (err) {
+          if (/secure chat key/i.test(err.message || '')) setKeyNeeded(true);
           toast(err.message || 'Failed to send voice note', 'error');
         } finally {
           setBusy(false);
@@ -177,6 +216,45 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
   };
 
   return (
+    <div className="message-input-wrap">
+      <div className={`mode-hint ${secure ? 'secure' : 'normal'}`}>
+        {secure ? '🔐 Secure Chat — End-to-End Encrypted' : '🟢 Normal Chat'}
+      </div>
+      {secure && (keyNeeded || !hasSecureKey) && (
+        <div className="secure-key-prompt">
+          <span className="secure-key-text">
+            <Twemoji>🔑</Twemoji> {keyNeeded
+              ? 'Secure send blocked: no Secure Chat Key on this device yet.'
+              : 'No Secure Chat Key set on this device yet.'}{' '}
+            Set one here (or in <Link to="/settings">Settings</Link>) and share the <strong>exact same key</strong> with your receiver — they type it on the locked message to read it.
+          </span>
+          <div className="secure-key-row">
+            <input
+              className="search-input"
+              type="password"
+              placeholder="e.g. mango-sunset-42"
+              value={keyDraft}
+              onChange={(e) => setKeyDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveSecureKey(); } }}
+              autoComplete="off"
+            />
+            <button type="button" className="btn primary sm" onClick={saveSecureKey} disabled={!keyDraft.trim()}>
+              Save key
+            </button>
+            {keyNeeded && (
+              <button type="button" className="icon-btn" title="Dismiss" onClick={() => setKeyNeeded(false)}>
+                <Twemoji>✕</Twemoji>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {viewOnce && (
+        <div className="viewonce-bar">
+          <span>👁️ View-once ON — next <strong>photo</strong> opens 1 time, then deletes. Screenshots are blocked best-effort.</span>
+          <button type="button" className="icon-btn" title="Turn off view-once" onClick={() => setViewOnce(false)}>✕</button>
+        </div>
+      )}
     <div className="message-input">
       {editingMessage && (
         <div className="edit-bar">
@@ -219,7 +297,16 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
           <button type="button" className="icon-btn" title="Emoji" onClick={() => setShowEmoji((s) => !s)}>
             <Twemoji>😊</Twemoji>
           </button>
-          <label className={`icon-btn attach-label ${busy ? 'disabled' : ''}`} title="Attach image/video">
+          <button
+            type="button"
+            className={`icon-btn ${viewOnce ? 'viewonce-active' : ''}`}
+            title={viewOnce ? 'View-once ON: next photo opens 1 time, screenshot deterred' : 'View-once OFF: tap to send next photo as one-time view (photos only)'}
+            onClick={() => setViewOnce((v) => !v)}
+            disabled={busy}
+          >
+            <Twemoji>{viewOnce ? '👁️‍🗨️' : '👁️'}</Twemoji>
+          </button>
+          <label className={`icon-btn attach-label ${busy ? 'disabled' : ''}`} title={viewOnce ? 'Attach photo as one-time view' : 'Attach image/video'}>
             <Twemoji>🖼️</Twemoji>
             <input type="file" accept="image/*,video/*" hidden onChange={handleFilePick('image/*,video/*', 'file')} />
           </label>
@@ -229,7 +316,7 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
           </label>
           <textarea
             rows={1}
-            placeholder={busy ? (progress != null ? `Encrypting & uploading… ${Math.round(progress * 100)}%` : 'Working…') : 'Type a message'}
+            placeholder={busy ? (progress != null ? `${secure ? 'Encrypting & ' : ''}uploading… ${Math.round(progress * 100)}%` : 'Working…') : (secure ? 'Type a secure message' : 'Type a message')}
             value={text}
             disabled={busy}
             onChange={(e) => {
@@ -261,6 +348,7 @@ export default function MessageInput({ chatId, editingMessage, onEditSubmit, onE
           )}
         </>
       )}
+    </div>
     </div>
   );
 }

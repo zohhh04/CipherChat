@@ -2,7 +2,9 @@ import { useState } from 'react';
 import FileAttachment from './FileAttachment';
 import TranslationWidget from './TranslationWidget';
 import { Twemoji } from '../common/EmojiText';
+import PasswordInput from '../common/PasswordInput';
 import { timeShort } from '../../utils/format';
+import { useChat } from '../../context/ChatContext';
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
 
@@ -16,12 +18,59 @@ function Ticks({ message, myId }) {
   return <span className="ticks" title="Sent">✓</span>;
 }
 
-export default function MessageBubble({ message, chat, myId, onEdit, onDelete, onReply, onAddReaction, onRemoveReaction, replyToMessage }) {
+function renderHighlighted(text, term) {
+  const q = (term || '').trim();
+  if (!q) return text;
+  const lower = text.toLowerCase();
+  const needle = q.toLowerCase();
+  const parts = [];
+  let i = 0;
+  let key = 0;
+  for (;;) {
+    const idx = lower.indexOf(needle, i);
+    if (idx === -1) {
+      parts.push(text.slice(i));
+      break;
+    }
+    if (idx > i) parts.push(text.slice(i, idx));
+    parts.push(<mark key={key++} className="search-hit">{text.slice(idx, idx + needle.length)}</mark>);
+    i = idx + needle.length;
+  }
+  return parts;
+}
+
+export default function MessageBubble({ message, chat, myId, highlight = '', onEdit, onDelete, onReply, onAddReaction, onRemoveReaction, replyToMessage }) {
   const mine = message.sender === myId;
   const senderName = chat.members.find((m) => m.id === message.sender)?.username || 'Unknown';
   const [showMenu, setShowMenu] = useState(false);
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const [showTranslation, setShowTranslation] = useState(false);
+  const [unlockKey, setUnlockKey] = useState('');
+  const [unlockBusy, setUnlockBusy] = useState(false);
+  const [unlockError, setUnlockError] = useState('');
+  const [showUnlock, setShowUnlock] = useState(false);
+  let unlockSecureMessage = null;
+  try {
+    ({ unlockSecureMessage } = useChat());
+  } catch {
+    unlockSecureMessage = null;
+  }
+
+  const handleUnlock = async (e) => {
+    if (e) e.preventDefault();
+    if (!unlockKey.trim() || unlockBusy) return;
+    setUnlockBusy(true);
+    setUnlockError('');
+    try {
+      await unlockSecureMessage(chat.id, message.id, unlockKey.trim());
+      setUnlockKey('');
+      setShowUnlock(false);
+    } catch (err) {
+      setUnlockError(err.message || 'Wrong key — could not decrypt');
+    } finally {
+      setUnlockBusy(false);
+    }
+  };
 
   const handleContextMenu = (e) => {
     if (message.deletedAt) return;
@@ -60,10 +109,14 @@ export default function MessageBubble({ message, chat, myId, onEdit, onDelete, o
   const reactions = message.reactions || {};
   const reactionEntries = Object.entries(reactions).filter(([, users]) => users.length > 0);
 
+  const isNormal = message.mode === 'normal';
   return (
     <div className={`bubble-row ${mine ? 'mine' : 'theirs'}`}>
       <div className="bubble" onContextMenu={handleContextMenu}>
         {!mine && chat.type === 'group' && <span className="bubble-author">{senderName}</span>}
+        <span className={`mode-chip ${isNormal ? 'normal' : 'secure'}`} title={isNormal ? 'Normal chat — not end-to-end encrypted' : 'Secure chat — end-to-end encrypted'}>
+          {isNormal ? '🟢 Normal' : '🔐 Encrypted'}
+        </span>
         {replyToMessage && !replyToMessage.deletedAt && (
           <div className="reply-preview" onClick={() => onReply && onReply(replyToMessage)}>
             <span className="reply-author">{chat.members.find((m) => m.id === replyToMessage.sender)?.username || 'Unknown'}</span>
@@ -72,12 +125,56 @@ export default function MessageBubble({ message, chat, myId, onEdit, onDelete, o
         )}
         {message.deletedAt ? (
           <em className="deleted">This message was deleted</em>
+        ) : message.locked ? (
+          <div className="locked-secure">
+            <p className="bubble-text">🔐 Encrypted message</p>
+            <code
+              className="locked-preview"
+              title="Encrypted content — enter the sender's key to view"
+              style={{ display: 'block', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: 0.7, fontSize: 11 }}
+            >
+              {(message.lockPreview || message.lockCiphertext || '').slice(0, 160)}
+            </code>
+            {!showUnlock ? (
+              <button type="button" className="btn primary sm" style={{ marginTop: 8 }} onClick={() => setShowUnlock(true)}>
+                🔑 Enter key to view
+              </button>
+            ) : (
+              <form onSubmit={handleUnlock} style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+                <PasswordInput
+                  placeholder="Enter sender's key"
+                  value={unlockKey}
+                  onChange={(e) => setUnlockKey(e.target.value)}
+                  autoFocus
+                  wrapperStyle={{ minWidth: 200 }}
+                />
+                {unlockError && <span className="decrypt-error" style={{ fontSize: 12 }}>{unlockError}</span>}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button type="submit" className="btn primary sm" disabled={unlockBusy || !unlockKey.trim()}>
+                    {unlockBusy ? 'Decrypting…' : 'View message'}
+                  </button>
+                  <button type="button" className="btn sm" onClick={() => { setShowUnlock(false); setUnlockKey(''); setUnlockError(''); }}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
         ) : (
           <>
             {message.file ? (
-              <FileAttachment file={message.file} mine={mine} />
+              <FileAttachment file={message.file} mine={mine} message={message} chatId={chat && chat.id} />
             ) : null}
-            {message.text && <p className="bubble-text">{message.text}</p>}
+            {message.viewOnce && !message.file && (
+              <div className="viewonce-expired">
+                <span className="viewonce-icon">👁️‍🗨️</span>
+                <span>{mine ? 'View-once photo opened' : 'Photo already viewed — deleted'}</span>
+              </div>
+            )}
+            {message.text && <p className="bubble-text">{renderHighlighted(message.text, highlight)}</p>}
+            {message.decryptError && (
+              <p className="bubble-text decrypt-error">🔐 Unable to decrypt this message</p>
+            )}
           </>
         )}
         <span className="bubble-meta">
@@ -110,6 +207,24 @@ export default function MessageBubble({ message, chat, myId, onEdit, onDelete, o
             >
               <Twemoji>😊</Twemoji>
             </button>
+            {mine && message.text && !message.locked && (
+              <button
+                type="button"
+                className="icon-btn"
+                title="Edit message"
+                onClick={(e) => { e.stopPropagation(); handleEdit(); }}
+              >
+                <Twemoji>✏️</Twemoji>
+              </button>
+            )}
+            <button
+              type="button"
+              className="icon-btn danger"
+              title={mine ? 'Delete message for everyone' : 'Remove from my view only'}
+              onClick={(e) => { e.stopPropagation(); handleDelete(); }}
+            >
+              <Twemoji>🗑️</Twemoji>
+            </button>
           </div>
         )}
         {showReactionPicker && (
@@ -138,7 +253,12 @@ export default function MessageBubble({ message, chat, myId, onEdit, onDelete, o
             )}
             {mine && (
               <button type="button" className="danger" onClick={handleDelete}>
-                <Twemoji>🗑️</Twemoji> Delete
+                <Twemoji>🗑️</Twemoji> Delete for everyone
+              </button>
+            )}
+            {!mine && (
+              <button type="button" className="danger" onClick={handleDelete}>
+                <Twemoji>🗑️</Twemoji> Remove from my view
               </button>
             )}
           </div>

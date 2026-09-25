@@ -111,35 +111,6 @@ async function translate(text, targetLang = 'en') {
   return response.choices[0]?.message?.content || text;
 }
 
-async function transcribeAudio(audioBuffer, filename = 'audio.webm', language = null) {
-  const openai = requireClient();
-
-  const base64 = Buffer.from(audioBuffer).toString('base64');
-  const mimeType = filename.endsWith('.mp3') ? 'audio/mp3' : filename.endsWith('.wav') ? 'audio/wav' : 'audio/webm';
-
-  const response = await openai.chat.completions.create({
-    model: config.ai.model,
-    max_tokens: config.ai.maxTokens,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `Transcribe this audio${language ? ` (language: ${language})` : ''}. Return ONLY the transcribed text, no explanations.`,
-          },
-          {
-            type: 'input_audio',
-            input_audio: { data: base64, format: filename.split('.').pop() || 'webm' },
-          },
-        ],
-      },
-    ],
-  });
-
-  return response.choices[0]?.message?.content || '';
-}
-
 async function detectUrgency(messages) {
   const openai = getClient();
   if (!openai) return { urgency: 'normal', confidence: 0.5 };
@@ -188,4 +159,4 @@ Return ONLY the JSON object, no other text.`,
   }
 }
 
-module.exports = { summarize, smartReplies, translate, transcribeAudio, detectUrgency };
+module.exports = { summarize, smartReplies, translate, detectUrgency };
